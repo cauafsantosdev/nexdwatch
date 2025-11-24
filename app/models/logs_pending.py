@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Integer, String
+from sqlalchemy import Integer, String, Float
 from sqlalchemy.types import Enum
 from sqlalchemy.orm import Mapped, mapped_column
 from app.core.database import Base
@@ -17,7 +17,7 @@ class LogPending(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(15))
     film_slug: Mapped[str] = mapped_column(String(255))
-    rating: Mapped[int] = mapped_column(Integer)
+    rating: Mapped[float] = mapped_column(Float)
     status: Mapped[Status] = mapped_column(Enum(Status), default=Status.PENDING, 
                                            server_default=Status.PENDING.value, nullable=False
     )

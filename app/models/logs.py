@@ -1,4 +1,4 @@
-from sqlalchemy import Integer, ForeignKey
+from sqlalchemy import Integer, Float, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 
@@ -15,4 +15,4 @@ class Log(Base):
     film_id: Mapped[int] = mapped_column(ForeignKey("films.id"))
     film: Mapped["Film"] = relationship(back_populates="logs", lazy="selectin")
     
-    rating: Mapped[int] = mapped_column(Integer)
+    rating: Mapped[float] = mapped_column(Float)
