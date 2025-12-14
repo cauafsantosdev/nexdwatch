@@ -27,11 +27,18 @@ def load_logs():
     typer.echo("Logs loaded successfully.")
 
 
+async def _load_all_async():
+    """Async helper to load both films and logs"""
+    typer.echo(f"Starting to load films from: {FILMS_CSV_PATH}")
+    await load_films_data(FILMS_CSV_PATH)
+    
+    typer.echo(f"Starting to load logs from: {LOGS_CSV_PATH}")
+    await load_logs_data(LOGS_CSV_PATH)
+
 @app.command()
 def load_all():
     """Triggers both load_films_data and load_logs_data"""
-    asyncio.run(load_films_data(FILMS_CSV_PATH))
-    asyncio.run(load_logs_data(LOGS_CSV_PATH))
+    asyncio.run(_load_all_async())
     typer.echo("All data loaded successfully.")
 
 if __name__ == "__main__":
