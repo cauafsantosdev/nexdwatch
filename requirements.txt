@@ -14,7 +14,3 @@ scrapxd
 typer        
 python-dotenv
 rich
-ipykernel
-jupyter
-matplotlib
-seaborn
