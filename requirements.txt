@@ -10,7 +10,7 @@ numpy
 pandas
 scikit-learn
 joblib
-scrapxd
+letterboxdpy==6.5.7
 typer        
 python-dotenv
 rich

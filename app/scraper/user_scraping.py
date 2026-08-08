@@ -1,9 +1,10 @@
 """Letterboxd profile scraping adapters."""
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
-from scrapxd import Scrapxd
+from letterboxdpy.pages.user_films import UserFilms
 
 from app.domain.profiles import ScrapedProfile, ScrapedWatch
 
@@ -19,19 +20,29 @@ def scrape_user_profile(username: str) -> ScrapedProfile:
     Returns:
         A typed profile containing every entry with a valid film slug.
     """
-    client = Scrapxd()
-    user = client.get_user(username=username)
-    entries = getattr(getattr(user, "logs", None), "entries", ()) or ()
+    try:
+        result = UserFilms(username).get_films()
+    except Exception:
+        logger.exception("Profile scrape failed for username=%s", username)
+        raise
+
+    if not isinstance(result, Mapping) or not isinstance(result.get("movies"), Mapping):
+        logger.error("Invalid watched-film response for username=%s", username)
+        raise TypeError("watched-film response is invalid")
+    movies = result["movies"]
 
     watches: list[ScrapedWatch] = []
-    for entry in entries:
-        film = getattr(entry, "film", None)
-        slug = getattr(film, "slug", None)
+    for movie_key, movie_data in movies.items():
+        if not isinstance(movie_data, Mapping):
+            logger.debug("Skipping malformed profile entry for username=%s", username)
+            continue
+
+        slug = movie_data.get("slug") or movie_key
         if not isinstance(slug, str) or not slug.strip():
             logger.debug("Skipping profile entry without a valid film slug")
             continue
 
-        raw_rating = getattr(entry, "rating", None)
+        raw_rating = movie_data.get("rating")
         try:
             rating = float(raw_rating) if raw_rating is not None else None
         except (TypeError, ValueError):

@@ -12,43 +12,60 @@ from app.scraper import film_scraping
 from app.scraper.film_scraping import FilmScrapeOutcome, FilmScrapeResult
 
 
-def _film(total_logs: int = 1_500) -> SimpleNamespace:
+def _movie(rating_count: int | None = 1_500) -> SimpleNamespace:
+    aggregate_rating = {
+        "ratingValue": 4.0,
+        "reviewCount": 25,
+    }
+    if rating_count is not None:
+        aggregate_rating["ratingCount"] = rating_count
+
     return SimpleNamespace(
-        id=99,
+        tmdb_id="99",
         title="Title",
-        original_title="Original",
+        original_title=None,
         year=2020,
         runtime=100,
-        director=["Director"],
-        genre=["Drama"],
-        country=["Brazil"],
-        language=["Portuguese"],
-        actors=["Actor"],
-        studio=["Studio"],
-        synopsis="Synopsis",
+        crew={"director": [{"name": "Director"}, {"name": "Director"}]},
+        genres=[
+            {"type": "genre", "name": "Drama"},
+            {"type": "theme", "name": "Identity"},
+            {"type": "mini-theme", "name": "Excluded"},
+        ],
+        details=[
+            {"type": "country", "name": "Brazil"},
+            {"type": "language", "name": "Portuguese"},
+            {"type": "language", "name": "Portuguese"},
+            {"type": "language", "name": "English"},
+            {"type": "studio", "name": "Studio"},
+        ],
+        cast=[{"name": "Actor"}, {"name": "Actor"}],
+        description="Synopsis",
         tagline="Tagline",
-        themes=["Theme"],
-        avg_rating=4.0,
-        total_logs=total_logs,
+        rating=4.0,
+        pages=SimpleNamespace(
+            profile=SimpleNamespace(
+                script={"aggregateRating": aggregate_rating},
+            )
+        ),
+        get_watchers_stats=lambda: (_ for _ in ()).throw(
+            AssertionError("watcher count must not be used")
+        ),
     )
 
 
 def test_film_scraper_uses_tmdb_id_and_reports_all_outcomes(monkeypatch) -> None:
-    films = {
-        "success": _film(),
-        "filtered": _film(total_logs=999),
+    movies = {
+        "success": _movie(),
+        "filtered": _movie(rating_count=999),
     }
 
-    def get_film(slug: str) -> SimpleNamespace:
+    def movie_factory(slug: str) -> SimpleNamespace:
         if slug == "failed":
-            raise RuntimeError("not found")
-        return films[slug]
+            raise RuntimeError("transport failure")
+        return movies[slug]
 
-    monkeypatch.setattr(
-        film_scraping,
-        "Scrapxd",
-        lambda: SimpleNamespace(get_film=get_film),
-    )
+    monkeypatch.setattr(film_scraping, "Movie", movie_factory)
 
     results = film_scraping.scrape_film_queue(["success", "filtered", "failed"])
 
@@ -57,8 +74,35 @@ def test_film_scraper_uses_tmdb_id_and_reports_all_outcomes(monkeypatch) -> None
         FilmScrapeOutcome.FILTERED,
         FilmScrapeOutcome.FAILED,
     ]
-    assert results[0].metadata["tmdb_id"] == 99
+    assert results[0].metadata == {
+        "tmdb_id": 99,
+        "slug": "success",
+        "title": "Title",
+        "original_title": "Title",
+        "year": 2020,
+        "runtime": 100,
+        "director": ["Director"],
+        "genre": ["Drama"],
+        "country": ["Brazil"],
+        "language": ["Portuguese", "English"],
+        "actors": ["Actor"],
+        "studio": ["Studio"],
+        "synopsis": "Synopsis",
+        "tagline": "Tagline",
+        "themes": ["Identity"],
+        "avg_rating": 4.0,
+        "total_logs": 1_500,
+    }
     assert "id" not in results[0].metadata
+
+
+def test_film_scraper_fails_when_rating_count_is_missing(monkeypatch) -> None:
+    monkeypatch.setattr(film_scraping, "Movie", lambda _: _movie(rating_count=None))
+
+    result = film_scraping.scrape_film_queue(["missing-count"])[0]
+
+    assert result.outcome == FilmScrapeOutcome.FAILED
+    assert result.metadata is None
 
 
 def test_pending_slug_query_calls_scalars_method() -> None:
