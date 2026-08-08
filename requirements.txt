@@ -14,3 +14,4 @@ scrapxd
 typer        
 python-dotenv
 rich
+pytest

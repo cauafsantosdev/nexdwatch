@@ -1,30 +1,45 @@
 from .actor import Actor
 from .country import Country
 from .director import Director
-from .film_queue import FilmQueue
 from .film import Film
+from .film_queue import FilmQueue
 from .genre import Genre
 from .language import Language
-from .logs_pending import LogPending
 from .logs import Log
-from .relationships import film_actors, film_countries, film_directors, film_genres, film_languages, film_studios, film_themes
+from .logs_pending import LogPending
+from .relationships import (
+    film_actors,
+    film_countries,
+    film_directors,
+    film_genres,
+    film_languages,
+    film_studios,
+    film_themes,
+)
+from .status import Status
 from .studio import Studio
 from .theme import Theme
 from .user import User
-
 
 __all__ = [
     "Actor",
     "Country",
     "Director",
-    "FilmQueue",
     "Film",
+    "FilmQueue",
     "Genre",
     "Language",
-    "LogPending",
     "Log",
-    "film_actors", "film_countries", "film_directors", "film_genres", "film_languages", "film_studios", "film_themes",
+    "LogPending",
+    "Status",
     "Studio",
     "Theme",
-    "User"
+    "User",
+    "film_actors",
+    "film_countries",
+    "film_directors",
+    "film_genres",
+    "film_languages",
+    "film_studios",
+    "film_themes",
 ]
