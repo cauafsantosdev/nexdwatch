@@ -12,6 +12,7 @@ scikit-learn
 joblib
 letterboxdpy==6.5.7
 python-multipart
+faiss-cpu==1.14.3
 typer        
 python-dotenv
 rich

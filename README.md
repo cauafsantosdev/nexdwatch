@@ -27,12 +27,12 @@ The system follows a **decoupled architecture pattern**, designed to handle high
 * **Execution:** Managed via a custom CLI (`manage.py`), ensuring reproducible runs within the Docker environment.
 * **Processing:** The pipeline fetches historical data from Postgres using a high-performance sync driver (`psycopg2`), handles duplicate removal, and pivots the data into a sparse matrix.
 * **Modeling:** **Scikit-learn** performs TruncatedSVD factorization to reduce dimensionality.
-* **Artifacts:** The trained model is serialized not as a heavy pickle file, but as optimized NumPy arrays (`.npy`) and JSON indices, saved to a shared volume.
+* **Artifacts:** Training writes normalized SVD item embeddings, their film-ID mapping, and an exact FAISS retrieval index to the shared data volume.
 
 ### 3. Online Inference Engine
 
 * **Startup Strategy:** During the application's `lifespan` startup event, the API loads the lightweight model artifacts directly into **RAM**.
-* **Real-Time Computation:** When a recommendation request arrives, the engine avoids database reads for feature extraction. Instead, it computes the user's vector profile on-the-fly using **NumPy** operations (Mean Pooling & Dot Product).
+* **Real-Time Computation:** The engine mean-pools rated SVD item vectors and uses FAISS `IndexFlatIP` for exact inner-product candidate retrieval.
 * **Result:** This "In-Memory" approach eliminates disk I/O latency, delivering recommendations in **milliseconds**.
 
 ---
@@ -111,6 +111,9 @@ docker-compose exec api python manage.py load-all
 
 # 3. Train the SVD Model (Generate Artifacts)
 docker-compose exec api python manage.py train
+
+# Optional: rebuild only retrieval.faiss from existing NumPy/JSON artifacts
+docker-compose exec api python manage.py build-index
 
 # 4. Restart API (To load the new model into memory)
 docker-compose restart api

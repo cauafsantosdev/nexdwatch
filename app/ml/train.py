@@ -1,6 +1,6 @@
 import json
 import logging
-import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -9,6 +9,7 @@ from sklearn.preprocessing import normalize
 from sqlalchemy import create_engine
 
 from app.core.config import get_settings
+from app.ml.faiss_index import FaissIndexBuildResult, build_faiss_index
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -16,7 +17,9 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-def train_svd_model() -> None:
+def train_svd_model(
+    artifact_root: str | Path | None = None,
+) -> FaissIndexBuildResult | None:
     """Train the current SVD model and write its established artifacts."""
     logger.info("Starting SVD training pipeline...")
 
@@ -31,13 +34,13 @@ def train_svd_model() -> None:
         df = df.drop_duplicates(subset=["user_id", "film_id"])
     except Exception:
         logger.exception("Unable to read SVD training interactions")
-        return
+        return None
     finally:
         engine.dispose()
 
     if df.empty:
         logger.warning("No logs found. Model can't be trained.")
-        return
+        return None
 
     logger.info("Data loaded: %d logs", len(df))
 
@@ -54,12 +57,24 @@ def train_svd_model() -> None:
     item_factors_norm = normalize(item_factors, axis=1)
 
     logger.info("Saving artifacts...")
-    output_dir = "data"
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = Path(artifact_root or settings.ARTIFACT_ROOT)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    np.save(f"{output_dir}/item_embeddings.npy", item_factors_norm)
+    np.save(output_dir / "item_embeddings.npy", item_factors_norm)
 
-    with open(f"{output_dir}/film_index.json", "w", encoding="utf-8") as index_file:
+    with (output_dir / "film_index.json").open("w", encoding="utf-8") as index_file:
         json.dump(film_ids, index_file)
 
-    logger.info("Artifacts saved successfully!")
+    index_result = build_faiss_index(
+        item_factors_norm,
+        film_ids,
+        output_dir / "retrieval.faiss",
+    )
+
+    logger.info(
+        "Artifacts saved successfully: films=%d dimension=%d retrieval=%s",
+        index_result.film_count,
+        index_result.dimension,
+        index_result.output_path,
+    )
+    return index_result
