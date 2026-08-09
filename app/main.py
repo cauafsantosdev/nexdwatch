@@ -3,7 +3,7 @@ import logging
 
 from fastapi import FastAPI
 
-from app.api.routes import health_router, recommendations_router
+from app.api.routes import health_router, imports_router, recommendations_router
 from app.services.recommendation_service import get_recommendation_service
 
 logging.basicConfig(level=logging.INFO)
@@ -23,4 +23,5 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 app.include_router(health_router)
+app.include_router(imports_router)
 app.include_router(recommendations_router)

@@ -11,6 +11,7 @@ pandas
 scikit-learn
 joblib
 letterboxdpy==6.5.7
+python-multipart
 typer        
 python-dotenv
 rich

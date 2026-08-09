@@ -19,7 +19,7 @@ The system follows a **decoupled architecture pattern**, designed to handle high
 ### 1. Data Ingestion & Storage Layer
 
 * **Gateway:** A **FastAPI** service acts as the entry point, handling asynchronous requests for user synchronization.
-* **Scraping:** Background workers utilize `scrapxd` to fetch raw logs from Letterboxd without blocking the main thread.
+* **Ingestion:** Public profiles are synchronized through `letterboxdpy`. Official Letterboxd export ZIPs provide an offline fallback when live profile access is unavailable.
 * **Persistence:** All relational data (users, films, logs) is stored in **PostgreSQL 17**, ensuring data integrity via **SQLAlchemy** ORM.
 
 ### 2. Offline Training Pipeline
@@ -39,7 +39,7 @@ The system follows a **decoupled architecture pattern**, designed to handle high
 
 ## Key Features
 
-* **Letterboxd Integration:** A robust, asynchronous scraping pipeline (`asyncio` + `scrapxd`) that extracts watch history and ratings from public profiles.
+* **Letterboxd Integration:** Public username synchronization uses `letterboxdpy`; official export ZIP ingestion resolves watch history and ratings entirely offline against the existing film catalog.
 * **Collaborative Filtering:** Uses Matrix Factorization (TruncatedSVD) trained on over **4.3 million** interaction logs to map users and items into a dense vector space.
 * **In-Memory Inference:** The inference engine serves the model entirely from RAM, eliminating disk I/O during requests to ensure real-time performance.
 * **Reproducible Operations:** Includes a custom CLI (`manage.py`) inside Docker to standardize data loading, model retraining, and migrations.
@@ -125,11 +125,24 @@ Interactive documentation is available at: **http://localhost:8000/docs**
 ### Workflow Example
 
 **Step 1: Ingest Profile**
-Send a Letterboxd username to the sync endpoint. The system will scrape logs and store them.
+Send a Letterboxd username to the sync endpoint. The system will fetch and store its public logs.
 
 * `POST /users/{username}/sync-logs`
 * *Input:* `cauafsantosdev`
 * *Returns:* `user_id: 5`
+
+If live synchronization is unavailable, download your official Letterboxd export
+and upload the ZIP as multipart form data under the `file` field:
+
+* `POST /users/{username}/import`
+* *Input:* the unmodified Letterboxd export ZIP
+* *Returns:* the user ID plus watched, rated, imported, and unresolved counts
+
+Export ingestion performs no Letterboxd or metadata-provider requests. It matches
+`watched.csv` rows only to films already in the NexdWatch catalog by exact,
+case-insensitive, whitespace-normalized title and year (including original title).
+Unknown or ambiguous films are reported as unresolved and are not queued.
+They can be resolved by a later import after the NexdWatch catalog is updated.
 
 **Step 2: Get Recommendations**
 Use the returned ID to generate recommendations. The engine calculates the user vector on-the-fly.

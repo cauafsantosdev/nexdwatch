@@ -1,5 +1,6 @@
 """Pydantic transport schemas."""
 
+from .imports import LetterboxdImportResponse, UnresolvedImportFilm
 from .recommendations import (
     HealthResponse,
     RecommendationItem,
@@ -9,7 +10,9 @@ from .recommendations import (
 
 __all__ = [
     "HealthResponse",
+    "LetterboxdImportResponse",
     "RecommendationItem",
     "RecommendationResponse",
     "SyncUserResponse",
+    "UnresolvedImportFilm",
 ]

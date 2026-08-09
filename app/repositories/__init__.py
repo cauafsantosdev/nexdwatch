@@ -1,7 +1,12 @@
 """Persistence repositories."""
 
-from .films import FilmRepository
+from .films import CatalogFilm, FilmRepository
 from .interactions import InteractionRepository
 from .users import UserRepository
 
-__all__ = ["FilmRepository", "InteractionRepository", "UserRepository"]
+__all__ = [
+    "CatalogFilm",
+    "FilmRepository",
+    "InteractionRepository",
+    "UserRepository",
+]
