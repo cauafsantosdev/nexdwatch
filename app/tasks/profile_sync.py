@@ -99,9 +99,23 @@ def execute_profile_sync(
     completed = processing.completed(
         TaskResult(user_id=result.user_id, logs_count=result.logs_count)
     )
-    store.set_fresh(username, task_id)
     store.save_task(completed)
-    store.release_active(username, task_id)
+    try:
+        store.set_fresh(username, task_id)
+    except Exception:
+        logger.exception(
+            "Unable to store profile freshness task_id=%s username=%s",
+            task_id,
+            username,
+        )
+    try:
+        store.release_active(username, task_id)
+    except Exception:
+        logger.exception(
+            "Unable to release completed profile-sync lock task_id=%s username=%s",
+            task_id,
+            username,
+        )
     logger.info(
         "Profile sync completed task_id=%s username=%s logs=%d",
         task_id,
