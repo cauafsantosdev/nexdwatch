@@ -18,8 +18,8 @@ The system follows a **decoupled architecture pattern**, designed to handle high
 
 ### 1. Data Ingestion & Storage Layer
 
-* **Gateway:** A **FastAPI** service acts as the entry point, handling asynchronous requests for user synchronization.
-* **Ingestion:** Public profiles are synchronized through `letterboxdpy`. Official Letterboxd export ZIPs provide an offline fallback when live profile access is unavailable.
+* **Gateway:** A **FastAPI** service submits durable username synchronization tasks and serves synchronous imports and recommendations.
+* **Ingestion:** Public profiles are synchronized by a Redis/Celery worker through `letterboxdpy`. Official Letterboxd export ZIPs remain a synchronous offline fallback.
 * **Persistence:** All relational data (users, films, logs) is stored in **PostgreSQL 17**, ensuring data integrity via **SQLAlchemy** ORM.
 
 ### 2. Offline Training Pipeline
@@ -39,7 +39,7 @@ The system follows a **decoupled architecture pattern**, designed to handle high
 
 ## Key Features
 
-* **Letterboxd Integration:** Public username synchronization uses `letterboxdpy`; official export ZIP ingestion resolves watch history and ratings entirely offline against the existing film catalog.
+* **Letterboxd Integration:** Redis/Celery runs durable `letterboxdpy` username synchronization with per-user deduplication; official export ZIP ingestion resolves watch history and ratings synchronously and offline.
 * **Collaborative Filtering:** Uses Matrix Factorization (TruncatedSVD) trained on over **4.3 million** interaction logs to map users and items into a dense vector space.
 * **In-Memory Inference:** The inference engine serves the model entirely from RAM, eliminating disk I/O during requests to ensure real-time performance.
 * **Reproducible Operations:** Includes a custom CLI (`manage.py`) inside Docker to standardize data loading, model retraining, and migrations.
@@ -128,11 +128,13 @@ Interactive documentation is available at: **http://localhost:8000/docs**
 ### Workflow Example
 
 **Step 1: Ingest Profile**
-Send a Letterboxd username to the sync endpoint. The system will fetch and store its public logs.
+Submit a Letterboxd username synchronization task, then poll it until completion.
 
 * `POST /users/{username}/sync-logs`
-* *Input:* `cauafsantosdev`
-* *Returns:* `user_id: 5`
+* *Optional:* `?force=true` bypasses only the recent-success freshness window
+* *Returns:* `202 Accepted` with a task ID, or a recently completed task
+* `GET /tasks/{task_id}`
+* *Returns:* `queued`, `processing`, `completed`, or `failed`; completed tasks include `user_id` and `logs_count`
 
 If live synchronization is unavailable, download your official Letterboxd export
 and upload the ZIP as multipart form data under the `file` field:
@@ -146,6 +148,13 @@ Export ingestion performs no Letterboxd or metadata-provider requests. It matche
 case-insensitive, whitespace-normalized title and year (including original title).
 Unknown or ambiguous films are reported as unresolved and are not queued.
 They can be resolved by a later import after the NexdWatch catalog is updated.
+
+Username task metadata is retained in Redis for 24 hours, while successful
+synchronizations are reused for 15 minutes by default. The worker uses
+at-least-once delivery with idempotent profile persistence. Configure the broker,
+task-state Redis database, freshness, retention, active-lock TTL, and task limits
+through the `CELERY_BROKER_URL`, `TASK_STATE_REDIS_URL`, and `PROFILE_SYNC_*`
+environment settings documented in `.env.example`.
 
 **Step 2: Get Recommendations**
 Use the returned ID to generate recommendations. The engine calculates the user vector on-the-fly.

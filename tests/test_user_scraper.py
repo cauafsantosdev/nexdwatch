@@ -2,6 +2,13 @@
 
 from types import SimpleNamespace
 
+import pytest
+from letterboxdpy.core.exceptions import (
+    InvalidResponseError,
+    PageLoadError,
+    ResourceNotFoundError,
+)
+
 from app.scraper import user_scraping
 
 
@@ -56,3 +63,41 @@ def test_legacy_logs_include_unrated_watches(monkeypatch) -> None:
     logs = user_scraping.scrape_user_logs("cinephile")
 
     assert logs == [{"username": "cinephile", "slug": "slug-c", "rating": None}]
+
+
+@pytest.mark.parametrize(
+    "exception",
+    [
+        PageLoadError("https://letterboxd.com/user"),
+        InvalidResponseError("rate limited", code=429),
+        InvalidResponseError("upstream unavailable", code=503),
+    ],
+)
+def test_scraper_translates_retryable_upstream_failures(
+    monkeypatch, exception: Exception
+) -> None:
+    client = SimpleNamespace(get_films=lambda: (_ for _ in ()).throw(exception))
+    monkeypatch.setattr(user_scraping, "UserFilms", lambda _: client)
+
+    with pytest.raises(user_scraping.TransientProfileScrapeError):
+        user_scraping.scrape_user_profile("cinephile")
+
+
+@pytest.mark.parametrize(
+    "exception",
+    [
+        ResourceNotFoundError("https://letterboxd.com/missing"),
+        InvalidResponseError("bad request", code=400),
+        RuntimeError("unexpected library failure"),
+    ],
+)
+def test_scraper_translates_non_retryable_failures(
+    monkeypatch, exception: Exception
+) -> None:
+    client = SimpleNamespace(get_films=lambda: (_ for _ in ()).throw(exception))
+    monkeypatch.setattr(user_scraping, "UserFilms", lambda _: client)
+
+    with pytest.raises(user_scraping.ProfileScrapeError) as exc_info:
+        user_scraping.scrape_user_profile("cinephile")
+
+    assert not isinstance(exc_info.value, user_scraping.TransientProfileScrapeError)

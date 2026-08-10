@@ -15,6 +15,39 @@ services:
       db:
         condition: service_healthy
 
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: >
+      celery -A app.workers.celery_app.celery_app worker
+      --loglevel=INFO --queues=profile_sync --concurrency=1
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  redis:
+    image: redis:8.8.1-alpine
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    volumes:
+      - nexdwatch_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   notebook:
     build: .
     container_name: nexdwatch-notebook
@@ -60,3 +93,4 @@ services:
 
 volumes:
   nexdwatch_data:
+  nexdwatch_redis:

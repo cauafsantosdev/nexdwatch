@@ -19,6 +19,12 @@ from .recommendation_service import (
     RecommendationService,
     get_recommendation_service,
 )
+from .task_service import (
+    TaskInfrastructureError,
+    TaskService,
+    TaskSubmission,
+    get_task_service,
+)
 
 __all__ = [
     "EmptyProfileError",
@@ -29,9 +35,13 @@ __all__ = [
     "ProfileService",
     "ProfileSyncResult",
     "RecommendationService",
+    "TaskInfrastructureError",
+    "TaskService",
+    "TaskSubmission",
     "UnresolvedExportFilm",
     "get_letterboxd_import_service",
     "get_profile_service",
     "get_recommendation_service",
+    "get_task_service",
     "resolve_export_profile",
 ]

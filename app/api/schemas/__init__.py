@@ -5,7 +5,12 @@ from .recommendations import (
     HealthResponse,
     RecommendationItem,
     RecommendationResponse,
-    SyncUserResponse,
+)
+from .tasks import (
+    TaskErrorResponse,
+    TaskResultResponse,
+    TaskStateResponse,
+    TaskSubmissionResponse,
 )
 
 __all__ = [
@@ -13,6 +18,9 @@ __all__ = [
     "LetterboxdImportResponse",
     "RecommendationItem",
     "RecommendationResponse",
-    "SyncUserResponse",
+    "TaskErrorResponse",
+    "TaskResultResponse",
+    "TaskStateResponse",
+    "TaskSubmissionResponse",
     "UnresolvedImportFilm",
 ]

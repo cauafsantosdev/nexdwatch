@@ -1,4 +1,4 @@
-"""Response schemas for health, synchronization, and recommendations."""
+"""Response schemas for health and recommendations."""
 
 from typing import Literal
 
@@ -10,14 +10,6 @@ class HealthResponse(BaseModel):
 
     health: Literal["check"]
     model_status: Literal["loaded", "missing"]
-
-
-class SyncUserResponse(BaseModel):
-    """Profile synchronization summary."""
-
-    status: Literal["ok"]
-    user_id: int | None
-    logs_count: int
 
 
 class RecommendationItem(BaseModel):
