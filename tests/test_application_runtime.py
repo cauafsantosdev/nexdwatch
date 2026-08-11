@@ -7,11 +7,11 @@ from pathlib import Path
 from app.core.config import Settings
 
 
-def test_api_startup_import_does_not_load_torch_or_neural_experiment() -> None:
+def test_api_startup_import_does_not_load_research_ml_dependencies() -> None:
     script = (
         "import sys; import app.main; "
-        "blocked={'torch','experiments.neural_retrieval.training',"
-        "'experiments.neural_retrieval.service'}; "
+        "blocked={'torch','lightgbm','experiments.neural_retrieval.training',"
+        "'experiments.neural_retrieval.service','experiments.ranker.training'}; "
         "assert blocked.isdisjoint(sys.modules), blocked.intersection(sys.modules)"
     )
 
@@ -25,10 +25,16 @@ def test_api_startup_import_does_not_load_torch_or_neural_experiment() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_standard_requirements_do_not_include_torch() -> None:
+def test_standard_requirements_exclude_research_only_dependencies() -> None:
     requirements = Path("requirements.txt").read_text(encoding="utf-8").lower()
 
     assert "torch" not in requirements
+    assert "lightgbm" not in requirements
+    ranker_requirements = (
+        Path("requirements-ranker.txt").read_text(encoding="utf-8").lower()
+    )
+    assert "-r requirements.txt" in ranker_requirements
+    assert "lightgbm==4.7.0" in ranker_requirements
 
 
 def test_application_settings_have_no_neural_or_backend_selector() -> None:
