@@ -1,5 +1,7 @@
 import asyncio
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Annotated, Any
 
 import typer
 
@@ -14,6 +16,8 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_DIR = PROJECT_ROOT / "data"
 FILMS_CSV_PATH = str(DATA_DIR / "films_data.csv")
 LOGS_CSV_PATH = str(DATA_DIR / "users_data.csv")
+CANDIDATE_REPORT_PATH = DATA_DIR / "analysis" / "candidate_analysis.json"
+POPULARITY_ARTIFACT_PATH = DATA_DIR / "candidates" / "popularity.json"
 
 
 @app.command()
@@ -79,6 +83,180 @@ def build_index() -> None:
         f"Indexed {result.film_count} films with dimension {result.dimension}: "
         f"{result.output_path}"
     )
+
+
+@app.command("build-popularity")
+def build_popularity(
+    output_path: Annotated[
+        Path, typer.Option(help="Controlled-popularity artifact path.")
+    ] = POPULARITY_ARTIFACT_PATH,
+) -> None:
+    """Build the deterministic controlled-cohort popularity artifact."""
+    from app.ml.catalog import load_catalog_slug_mapping
+    from app.ml.historical_interactions import load_historical_interactions
+    from app.ml.popularity import (
+        build_popularity_artifact,
+        write_popularity_artifact,
+    )
+
+    typer.echo(f"Loading controlled interactions from: {LOGS_CSV_PATH}")
+    try:
+        mapping = load_catalog_slug_mapping()
+        data = load_historical_interactions(LOGS_CSV_PATH, mapping)
+        artifact = build_popularity_artifact(data)
+        destination = write_popularity_artifact(artifact, output_path)
+    except Exception as exc:
+        typer.echo(f"Popularity artifact build failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"Popularity artifact built: films={artifact.film_count} "
+        f"threshold={artifact.rating_threshold:.1f} path={destination}"
+    )
+
+
+@app.command("preview-candidates")
+def preview_candidates(
+    user_id: Annotated[int, typer.Argument(min=1)],
+    sample_size: Annotated[
+        int, typer.Option(min=1, max=50, help="Number of candidates to display.")
+    ] = 10,
+) -> None:
+    """Preview the finalized internal candidate inventory without persisting it."""
+    from app.services.candidate_generation_service import CandidateGenerationService
+
+    service = CandidateGenerationService()
+    if not service.load_artifacts():
+        typer.echo("Candidate artifacts are unavailable.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        result, titles, watched_overlap = asyncio.run(
+            _preview_candidates_async(service, user_id, sample_size)
+        )
+    except Exception as exc:
+        typer.echo(f"Candidate preview failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        service.unload_artifacts()
+
+    svd_count = sum(candidate.retrieved_by_svd for candidate in result.candidates)
+    popularity_count = sum(
+        candidate.retrieved_by_popularity for candidate in result.candidates
+    )
+    overlap = sum(candidate.source_count == 2 for candidate in result.candidates)
+    typer.echo(
+        f"user_id={user_id} nominal_budget={result.nominal_budget} "
+        f"unique_candidates={result.unique_candidate_count} "
+        f"svd_depth={result.svd_depth} popularity_depth={result.popularity_depth} "
+        f"svd={svd_count} popularity={popularity_count} source_overlap={overlap} "
+        f"watched_overlap={watched_overlap} "
+        f"svd_profile_available={result.svd_profile_available}"
+    )
+    typer.echo("Sample:")
+    for candidate in result.candidates[:sample_size]:
+        typer.echo(
+            f"  film_id={candidate.film_id} "
+            f"title={titles.get(candidate.film_id, '<unresolved>')!r} "
+            f"svd_rank={candidate.svd_rank} svd_score={candidate.svd_score} "
+            f"popularity_rank={candidate.popularity_rank} "
+            f"popularity_score={candidate.popularity_score}"
+        )
+
+
+async def _preview_candidates_async(
+    service: Any,
+    user_id: int,
+    sample_size: int,
+) -> tuple[Any, dict[int, str], int]:
+    """Generate candidates and resolve preview titles in one async lifecycle."""
+    from app.core.database import SessionLocal
+    from app.repositories.films import FilmRepository
+    from app.repositories.interactions import InteractionRepository
+
+    result = await service.generate(user_id)
+    sample_ids = [candidate.film_id for candidate in result.candidates[:sample_size]]
+    async with SessionLocal() as session:
+        films = await FilmRepository(session).get_by_ids(sample_ids)
+        watched_ids = set(
+            await InteractionRepository(session).get_watched_film_ids(result.user_id)
+        )
+    watched_overlap = len(
+        watched_ids.intersection(candidate.film_id for candidate in result.candidates)
+    )
+    return result, {film.id: film.title for film in films}, watched_overlap
+
+
+@app.command("analyze-candidates")
+def analyze_candidates(
+    seeds: str = typer.Option("42,43,44", help="Comma-separated random seeds."),
+    report_path: Annotated[
+        Path, typer.Option(help="Non-production JSON report path.")
+    ] = CANDIDATE_REPORT_PATH,
+) -> None:
+    """Analyze offline candidate recall, coverage, overlap, and source unions."""
+    from app.ml.candidate_analysis import CANDIDATE_CUTOFFS, run_candidate_analysis
+
+    try:
+        parsed_seeds = tuple(int(value.strip()) for value in seeds.split(","))
+        if not parsed_seeds or any(seed < 0 for seed in parsed_seeds):
+            raise ValueError
+    except ValueError as exc:
+        typer.echo(
+            "Analysis seeds must be comma-separated non-negative integers.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"Analyzing candidate generation on seeds={','.join(map(str, parsed_seeds))}"
+    )
+    try:
+        report = run_candidate_analysis(
+            parsed_seeds,
+            csv_path=LOGS_CSV_PATH,
+            report_path=report_path,
+        )
+    except Exception as exc:
+        typer.echo(f"Candidate analysis failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+    typer.echo("\nAggregate global recall (mean ± population std)")
+    for name, values in report["aggregate_strategy_metrics"].items():
+        coverage = _format_mean_std(values["profile_coverage_percentage"])
+        recalls = " ".join(
+            f"R@{cutoff}={_format_mean_std(values['recall_at'][cutoff])}"
+            for cutoff in CANDIDATE_CUTOFFS
+        )
+        typer.echo(f"{name}: {recalls} coverage={coverage}")
+    typer.echo(f"\nBest SVD profile: {report['best_svd_profile']}")
+    typer.echo("Shortlisted SVD + popularity hybrids:")
+    hybrids = report["svd_popularity_hybrids"]
+    for budget, shortlist in hybrids["shortlist_by_budget"].items():
+        values = shortlist["selected"]
+        typer.echo(
+            f"  nominal_budget={budget} "
+            f"configuration={shortlist['selected_configuration']} "
+            f"recall={_format_mean_std(values['recall'])} "
+            "mean_candidates="
+            f"{values['mean_deduplicated_candidates']['mean']:.2f} "
+            f"grid_location={shortlist['winner_grid_location']}"
+        )
+        for label, ratio in hybrids["allocation_sweep"][budget].items():
+            typer.echo(
+                f"    {label}: recall={_format_mean_std(ratio['recall'])} "
+                "mean_candidates="
+                f"{ratio['mean_deduplicated_candidates']['mean']:.2f}"
+            )
+    recommendation = report["recommended_candidate_strategy"]
+    typer.echo(
+        "Recommended source mix: "
+        f"{recommendation['classification']} "
+        f"budget={recommendation['nominal_budget']} "
+        f"{recommendation['allocations']}"
+    )
+    typer.echo(f"Report: {report_path}")
+
+
+def _format_mean_std(summary: Mapping[str, float]) -> str:
+    return f"{summary['mean']:.6f}±{summary['population_std']:.6f}"
 
 
 if __name__ == "__main__":

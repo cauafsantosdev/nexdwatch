@@ -1,9 +1,19 @@
 """User interaction persistence operations."""
 
+from dataclasses import dataclass
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Log
+
+
+@dataclass(frozen=True, slots=True)
+class RatedInteraction:
+    """Film and explicit rating used by inductive user encoding."""
+
+    film_id: int
+    rating: float
 
 
 class InteractionRepository:
@@ -45,3 +55,16 @@ class InteractionRepository:
             select(Log.film_id).where(Log.user_id == user_id)
         )
         return list(result.scalars().all())
+
+    async def get_rated_interactions(self, user_id: int) -> list[RatedInteraction]:
+        """Return rated interactions used to build personalized candidate profiles."""
+        result = await self._session.execute(
+            select(Log.film_id, Log.rating).where(
+                Log.user_id == user_id,
+                Log.rating.is_not(None),
+            )
+        )
+        return [
+            RatedInteraction(film_id=int(film_id), rating=float(rating))
+            for film_id, rating in result.all()
+        ]

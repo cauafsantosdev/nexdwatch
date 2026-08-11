@@ -1,0 +1,48 @@
+"""Production import-boundary checks for the application and worker."""
+
+import subprocess
+import sys
+from pathlib import Path
+
+from app.core.config import Settings
+
+
+def test_api_startup_import_does_not_load_torch_or_neural_experiment() -> None:
+    script = (
+        "import sys; import app.main; "
+        "blocked={'torch','experiments.neural_retrieval.training',"
+        "'experiments.neural_retrieval.service'}; "
+        "assert blocked.isdisjoint(sys.modules), blocked.intersection(sys.modules)"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_standard_requirements_do_not_include_torch() -> None:
+    requirements = Path("requirements.txt").read_text(encoding="utf-8").lower()
+
+    assert "torch" not in requirements
+
+
+def test_application_settings_have_no_neural_or_backend_selector() -> None:
+    setting_names = {name.upper() for name in Settings.model_fields}
+
+    assert not any(name.startswith("NCF_") for name in setting_names)
+    assert "RECOMMENDATION_BACKEND" not in setting_names
+
+
+def test_readme_describes_one_live_backend_and_isolates_neural_research() -> None:
+    readme = Path("README.md").read_text(encoding="utf-8")
+
+    assert "live `SVD_Mean_Pooling` service" in readme
+    assert "experiments/neural_retrieval/" in readme
+    assert "**Neural Option:**" not in readme
+    assert "Both backends" not in readme
+    assert "explicitly selectable" not in readme

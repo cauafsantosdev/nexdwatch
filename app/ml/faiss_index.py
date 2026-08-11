@@ -66,12 +66,7 @@ def build_faiss_index(
     output_path: str | Path,
 ) -> FaissIndexBuildResult:
     """Build and atomically write an exact ID-mapped inner-product index."""
-    vectors, ids = prepare_faiss_inputs(item_vectors, film_ids)
-
-    base_index = faiss.IndexFlatIP(vectors.shape[1])
-    index = faiss.IndexIDMap2(base_index)
-    index.add_with_ids(vectors, ids)
-    validate_faiss_index(index, vectors.shape, ids)
+    index = create_faiss_index(item_vectors, film_ids)
 
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -94,6 +89,19 @@ def build_faiss_index(
         dimension=int(index.d),
         output_path=destination,
     )
+
+
+def create_faiss_index(
+    item_vectors: ArrayLike,
+    film_ids: Sequence[object] | NDArray[np.generic],
+) -> faiss.IndexIDMap2:
+    """Build and validate an in-memory exact ID-mapped inner-product index."""
+    vectors, ids = prepare_faiss_inputs(item_vectors, film_ids)
+    base_index = faiss.IndexFlatIP(vectors.shape[1])
+    index = faiss.IndexIDMap2(base_index)
+    index.add_with_ids(vectors, ids)
+    validate_faiss_index(index, vectors.shape, ids)
+    return index
 
 
 def rebuild_faiss_index(

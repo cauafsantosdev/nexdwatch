@@ -8,9 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, Path, status
 from app.api.schemas.recommendations import (
     RecommendationResponse,
 )
+from app.services.recommendation_backend import RecommendationBackend
 from app.services.recommendation_service import (
     ModelUnavailableError,
-    RecommendationService,
     get_recommendation_service,
 )
 
@@ -25,9 +25,9 @@ router = APIRouter()
 )
 async def recommendations(
     user_id: Annotated[int, Path(gt=0)],
-    service: Annotated[RecommendationService, Depends(get_recommendation_service)],
+    service: Annotated[RecommendationBackend, Depends(get_recommendation_service)],
 ) -> RecommendationResponse:
-    """Return current SVD recommendations for a persisted user."""
+    """Return recommendations from the live SVD mean-pooling service."""
     try:
         result = await service.recommend(user_id)
     except ModelUnavailableError as exc:

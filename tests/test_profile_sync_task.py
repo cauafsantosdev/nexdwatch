@@ -1,6 +1,8 @@
 """Tests for the Celery profile-sync execution adapter."""
 
 import asyncio
+import subprocess
+import sys
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -256,3 +258,21 @@ def test_celery_task_uses_durable_json_configuration() -> None:
     assert profile_sync_task.max_retries == 2
     assert profile_sync_task.soft_time_limit == 300
     assert profile_sync_task.time_limit == 330
+
+
+def test_profile_sync_worker_import_does_not_eagerly_load_neural_runtime() -> None:
+    script = (
+        "import sys; import app.tasks.profile_sync; "
+        "blocked={'torch','experiments.neural_retrieval.training',"
+        "'experiments.neural_retrieval.service'}; "
+        "assert blocked.isdisjoint(sys.modules), blocked.intersection(sys.modules)"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr

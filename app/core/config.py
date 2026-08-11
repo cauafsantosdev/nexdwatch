@@ -52,8 +52,6 @@ class Settings(BaseSettings):
     RETRIEVAL_TOP_K: int = 500
     MIN_PROFILE_FILMS: int = 5
 
-    NCF_EMBEDDING_DIM: int = 64
-
     @model_validator(mode="after")
     def validate_task_timeouts(self) -> "Settings":
         """Keep locks and broker visibility longer than hard task execution."""

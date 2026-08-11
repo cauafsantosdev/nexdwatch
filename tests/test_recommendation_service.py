@@ -11,11 +11,12 @@ import numpy as np
 import pytest
 
 from app.ml.faiss_index import build_faiss_index
-from app.repositories.interactions import InteractionRepository
+from app.repositories.interactions import InteractionRepository, RatedInteraction
 from app.services import recommendation_service as recommendation_module
 from app.services.recommendation_service import (
     ModelUnavailableError,
     RecommendationService,
+    build_recommendation_service,
 )
 
 
@@ -250,6 +251,17 @@ def test_interaction_repository_returns_all_watched_rows() -> None:
     assert "logs.rating IS NOT NULL" not in str(statement)
 
 
+def test_interaction_repository_returns_rated_film_and_rating_pairs() -> None:
+    execute_result = SimpleNamespace(all=lambda: [(7, 4.5), (8, 1.0)])
+    session = SimpleNamespace(execute=AsyncMock(return_value=execute_result))
+
+    interactions = asyncio.run(InteractionRepository(session).get_rated_interactions(3))
+
+    assert interactions == [RatedInteraction(7, 4.5), RatedInteraction(8, 1.0)]
+    statement = session.execute.await_args.args[0]
+    assert "logs.rating IS NOT NULL" in str(statement)
+
+
 def test_watched_profile_without_usable_ratings_returns_accurate_info(
     tmp_path, monkeypatch
 ) -> None:
@@ -331,3 +343,9 @@ def test_inconsistent_faiss_artifact_is_rejected(tmp_path, inconsistency: str) -
 
     assert not service.load_artifacts()
     assert not service.is_model_loaded
+
+
+def test_service_factory_builds_live_svd_service(tmp_path) -> None:
+    service = build_recommendation_service(artifact_root=tmp_path)
+
+    assert isinstance(service, RecommendationService)

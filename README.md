@@ -28,11 +28,12 @@ The system follows a **decoupled architecture pattern**, designed to handle high
 * **Processing:** The pipeline fetches historical data from Postgres using a high-performance sync driver (`psycopg2`), handles duplicate removal, and pivots the data into a sparse matrix.
 * **Modeling:** **Scikit-learn** performs TruncatedSVD factorization to reduce dimensionality.
 * **Artifacts:** Training writes normalized SVD item embeddings, their film-ID mapping, and an exact FAISS retrieval index to the shared data volume.
+* **Candidate Research:** Offline analysis evaluates positive-weighted SVD plus controlled historical popularity for a future pre-ranker. Inductive neural retrieval remains isolated research under `experiments/neural_retrieval/`.
 
 ### 3. Online Inference Engine
 
 * **Startup Strategy:** During the application's `lifespan` startup event, the API loads the lightweight model artifacts directly into **RAM**.
-* **Real-Time Computation:** The engine mean-pools rated SVD item vectors and uses FAISS `IndexFlatIP` for exact inner-product candidate retrieval.
+* **Real-Time Computation:** The live `SVD_Mean_Pooling` service mean-pools SVD vectors and uses exact FAISS `IndexFlatIP` retrieval.
 * **Result:** This "In-Memory" approach eliminates disk I/O latency, delivering recommendations in **milliseconds**.
 
 ---
@@ -40,21 +41,24 @@ The system follows a **decoupled architecture pattern**, designed to handle high
 ## Key Features
 
 * **Letterboxd Integration:** Redis/Celery runs durable `letterboxdpy` username synchronization with per-user deduplication; official export ZIP ingestion resolves watch history and ratings synchronously and offline.
-* **Collaborative Filtering:** Uses Matrix Factorization (TruncatedSVD) trained on over **4.3 million** interaction logs to map users and items into a dense vector space.
+* **Collaborative Retrieval:** Serves the established TruncatedSVD mean-pooling baseline and maintains a separately evaluated broad candidate layer for a future ranker.
 * **In-Memory Inference:** The inference engine serves the model entirely from RAM, eliminating disk I/O during requests to ensure real-time performance.
 * **Reproducible Operations:** Includes a custom CLI (`manage.py`) inside Docker to standardize data loading, model retraining, and migrations.
-* **Cold Start Mitigation:** Implements a Mean Pooling strategy to generate vector profiles for new users instantly based on their imported history.
+* **History-Based Profiles:** Live SVD inference derives user vectors from imported ratings and does not require a learned product-user identity.
 
 ---
 
 ## Tech Stack
 
-* **Core:** Python 3.13
+* **Core:** Python 3.14.6
 * **Web Framework:** FastAPI + Uvicorn
 * **Data Engineering:** PostgreSQL 17, AsyncPG, SQLAlchemy 2.0 (Async), Alembic
-* **Machine Learning:** Scikit-learn (TruncatedSVD), NumPy, Pandas
+* **Machine Learning:** Scikit-learn (TruncatedSVD), FAISS, NumPy, Pandas
 * **Infrastructure:** Docker, Docker Compose
 * **Tooling:** Typer (CLI)
+
+PyTorch is used only by the separate `experiments/neural_retrieval/` research
+environment and is not installed in the standard API or worker image.
 
 ---
 
@@ -70,6 +74,7 @@ nexdwatch/
 │   ├── scraper/        # Async scraper module
 │   └── main.py         # FastAPI Inference Endpoints (Online)
 ├── data/               # Model artifacts (.npy) and raw CSVs
+├── experiments/        # Isolated neural-retrieval research
 ├── alembic/            # Database migrations
 ├── docker-compose.yml  # Service orchestration
 ├── manage.py           # CLI entrypoint for Ops tasks
@@ -162,13 +167,144 @@ Use the returned ID to generate recommendations. The engine calculates the user 
 * `GET /users/5/recommendations`
 * *Returns:* A JSON list of movies ranked by collaborative similarity.
 
+### Recommendation architecture
+
+The current live endpoint remains unchanged:
+
+```text
+rated history
+    ↓
+SVD mean pooling
+    ↓
+exact FAISS retrieval
+    ↓
+top 10 (`SVD_Mean_Pooling`)
+```
+
+The finalized internal pre-ranker boundary is broader:
+
+```text
+catalog
+    ↓
+positive-weighted SVD + controlled historical popularity
+    ↓
+~3,591 deduplicated candidates on average
+    ↓
+future personalized ranker
+    ↓
+future category/policy layer
+    ↓
+up to ~10 categories × ~20 films
+```
+
+Candidate depth is intentionally much larger than the possible ~200 displayed
+slots so later ranking and category policy retain useful alternatives. Candidate
+generation is global and personalized retrieval only; it does not create
+category-specific pools.
+
+The ranker, feature construction, category policy, and public hybrid serving are
+not implemented. `GET /users/{user_id}/recommendations` continues to use direct
+SVD mean pooling and the strategy string `SVD_Mean_Pooling`.
+
+### Candidate-generation evidence
+
+The maintained `exact_holdout_v2` analysis uses the controlled
+`data/users_data.csv` cohort, deterministic seeds 42/43/44, identical held-out
+targets, leakage-free temporary SVD fitting, exact FAISS retrieval, and
+training-only popularity counts over the same 46,990-film universe.
+
+```bash
+python manage.py analyze-candidates --seeds 42,43,44
+python manage.py build-popularity
+python manage.py preview-candidates 3953
+```
+
+The final bounded allocation sweep tested nominal budgets 500, 750, 1,000,
+1,500, 2,000, 2,500, 3,000, 4,000, and 5,000. Every budget evaluated the full
+two-source 80/20, 70/30, 60/40, 50/50, 40/60, 30/70, and 20/80 grid. Mean SVD
+was not re-tested after its earlier rejection, and NCF was not included. Source
+depths sum exactly to the nominal budget before deduplication.
+
+| Nominal source budget | Mean unique candidates | Recall | Marginal gain |
+| ---: | ---: | ---: | ---: |
+| 500 | 458.07 | 0.485927 ± 0.004849 | — |
+| 750 | 682.39 | 0.554086 ± 0.005193 | +0.068159 |
+| 1,000 | 908.18 | 0.605459 ± 0.005275 | +0.051373 |
+| 1,500 | 1,358.98 | 0.682435 ± 0.006571 | +0.076975 |
+| 2,000 | 1,815.85 | 0.733130 ± 0.006438 | +0.050695 |
+| 2,500 | 2,256.55 | 0.770770 ± 0.007064 | +0.037640 |
+| 3,000 | 2,702.70 | 0.800780 ± 0.005577 | +0.030010 |
+| 4,000 | 3,590.94 | 0.843337 ± 0.005399 | +0.042557 |
+| 5,000 | 4,494.34 | 0.874873 ± 0.005187 | +0.031536 |
+
+The ratio winners are interior points at every budget: 60/40 at 500, 2,000,
+and 5,000; 50/50 at 750, 1,000, 1,500, 2,500, 3,000, and 4,000. Thus the ratio
+boundary effect is resolved. The complete 63-configuration results remain in
+`data/analysis/candidate_analysis.json`.
+
+The 4,000→5,000 step still adds 3.15 absolute recall points, so this tested range
+does not establish a mathematical plateau. The finalized 4,000-source setting is
+an explicit pragmatic production cap: it retains 84.33% candidate recall and
+roughly 18 candidate alternatives per possible displayed slot while avoiding
+about 903 additional pre-ranker inputs per user:
+
+```text
+2,000 positive-weighted SVD
++ 2,000 controlled-popularity
+→ deduplicate without refill
+```
+
+At 4,000, target recall was 0.957062 HEAD, 0.520588 MID, and 0.377423 TAIL.
+Collective catalog coverage across all evaluated users was 99.9936%; this is not
+per-user catalog coverage. Retrieved popularity percentile had mean 0.7780 and
+median 0.9372.
+
+A local steady-state benchmark loaded artifacts before timing and ran 20
+repetitions for each of four persisted users with 210, 662, 1,004, and 14,946
+watches. Each budget used its measured winning ratio:
+
+| Nominal budget | Mean live unique candidates | p50 | p95 |
+| ---: | ---: | ---: | ---: |
+| 2,000 (60/40) | 1,790.75 | 24.77 ms | 124.44 ms |
+| 3,000 (50/50) | 2,674.00 | 26.62 ms | 135.25 ms |
+| 4,000 (50/50) | 3,571.00 | 27.97 ms | 133.61 ms |
+| 5,000 (60/40) | 4,478.75 | 29.56 ms | 150.56 ms |
+
+All 320 measured calls were deterministic; watched overlap was zero, including
+at 5,000. Artifact loading was excluded from these timings.
+
+The positive-weighted profile uses `weight = max(rating - 3.0, 0)` and divides
+the weighted vector sum by the absolute-weight sum. It does not fall back to
+mean SVD when no positive profile exists. Every source excludes all watched
+films, including rated, unrated, liked, and disliked watches.
+
+Controlled popularity is the count of resolved ratings `>= 3.5` in
+`data/users_data.csv`, ordered by count descending and film ID ascending. It is
+not `Film.total_logs`, a Letterboxd aggregate, an average rating, or mutable
+product traffic. `build-popularity` atomically writes validated film IDs,
+counts, ranks, threshold, schema, and source metadata to
+`data/candidates/popularity.json`.
+
+### Neural retrieval research
+
+The evaluated inductive neural retriever is no longer a supported application
+backend and FastAPI/Celery do not load its artifacts. Its Python implementation,
+tests, CPU dependency file, reproduction commands, corrected multi-seed metrics,
+and rejection rationale remain in
+[`experiments/neural_retrieval`](experiments/neural_retrieval/README.md). Local
+`data/ncf/` outputs remain ignored research artifacts. The normal application
+image does not install PyTorch.
+
 ---
 
 ## Engineering Decisions
 
-### 1. Why SVD (TruncatedSVD)?
+### 1. Why keep SVD (TruncatedSVD)?
 
-While Deep Learning (NCF) is powerful, SVD was chosen for this MVP due to its efficiency/latency ratio. It handles sparse matrices (common in movie ratings) exceptionally well and allows for fast CPU training, removing the need for heavy GPU dependencies in the initial deployment.
+SVD mean pooling is the only supported live recommendation service because it is
+compact, fast to train, straightforward to operate, and remains the known-good
+baseline. The evaluated inductive neural retriever is research-only and is not
+selectable by the application.
 
 ### 2. Why In-Memory Loading?
 
