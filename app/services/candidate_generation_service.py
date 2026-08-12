@@ -19,7 +19,7 @@ from app.ml.popularity import PopularityArtifact, read_popularity_artifact
 from app.ml.ratings import rating_to_bucket
 from app.ml.svd_artifacts import SVDArtifacts, load_svd_artifacts
 from app.ml.svd_profiles import build_svd_profile
-from app.repositories.interactions import InteractionRepository
+from app.repositories.interactions import InteractionRepository, RecommendationHistory
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +80,16 @@ class CandidateGenerationService:
         self._svd_artifacts = None
         self._popularity_artifact = None
 
+    @property
+    def svd_artifacts(self) -> SVDArtifacts | None:
+        """Expose loaded artifacts to internal downstream policy services."""
+        return self._svd_artifacts
+
+    @property
+    def popularity_artifact(self) -> PopularityArtifact | None:
+        """Expose controlled popularity metadata without mutation."""
+        return self._popularity_artifact
+
     async def generate(self, user_id: int) -> CandidateGenerationResult:
         """Generate a deterministic variable-size candidate inventory."""
         svd = self._svd_artifacts
@@ -88,9 +98,22 @@ class CandidateGenerationService:
             raise CandidateArtifactsUnavailableError
 
         async with self._session_factory() as session:
-            repository = InteractionRepository(session)
-            watched_ids = set(await repository.get_watched_film_ids(user_id))
-            rated = await repository.get_rated_interactions(user_id)
+            history = await InteractionRepository(session).get_recommendation_history(
+                user_id
+            )
+        return self.generate_from_history(user_id, history)
+
+    def generate_from_history(
+        self, user_id: int, history: RecommendationHistory
+    ) -> CandidateGenerationResult:
+        """Generate candidates from a history already loaded by an orchestrator."""
+        svd = self._svd_artifacts
+        popularity = self._popularity_artifact
+        if svd is None or popularity is None:
+            raise CandidateArtifactsUnavailableError
+
+        watched_ids = set(history.watched_film_ids)
+        rated = history.rated_interactions
 
         item_rows: list[int] = []
         rating_buckets: list[int] = []

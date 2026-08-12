@@ -239,6 +239,20 @@ def test_interaction_repository_filters_unrated_rows() -> None:
     assert "logs.rating IS NOT NULL" in str(statement)
 
 
+def test_interaction_repository_loads_policy_history_in_one_query() -> None:
+    execute_result = SimpleNamespace(all=lambda: [(7, 4.5), (8, None), (9, 2.0)])
+    session = SimpleNamespace(execute=AsyncMock(return_value=execute_result))
+
+    history = asyncio.run(InteractionRepository(session).get_recommendation_history(3))
+
+    assert history.watched_film_ids == (7, 8, 9)
+    assert history.rated_interactions == (
+        RatedInteraction(7, 4.5),
+        RatedInteraction(9, 2.0),
+    )
+    session.execute.assert_awaited_once()
+
+
 def test_interaction_repository_returns_all_watched_rows() -> None:
     scalar_result = SimpleNamespace(all=lambda: [7, 8])
     execute_result = SimpleNamespace(scalars=lambda: scalar_result)

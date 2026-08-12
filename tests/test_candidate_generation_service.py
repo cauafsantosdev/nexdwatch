@@ -23,7 +23,7 @@ from app.ml.popularity import (
 )
 from app.ml.ratings import rating_to_bucket
 from app.ml.svd_profiles import build_svd_profile
-from app.repositories.interactions import RatedInteraction
+from app.repositories.interactions import RatedInteraction, RecommendationHistory
 from app.services import candidate_generation_service as candidate_module
 from app.services.candidate_generation_service import CandidateGenerationService
 
@@ -96,13 +96,8 @@ def test_candidate_generation_preserves_parity_exclusion_and_provenance(
     rated = [RatedInteraction(1, 5.0), RatedInteraction(2, 2.0)]
     monkeypatch.setattr(
         candidate_module.InteractionRepository,
-        "get_watched_film_ids",
-        AsyncMock(return_value=watched),
-    )
-    monkeypatch.setattr(
-        candidate_module.InteractionRepository,
-        "get_rated_interactions",
-        AsyncMock(return_value=rated),
+        "get_recommendation_history",
+        AsyncMock(return_value=RecommendationHistory(tuple(watched), tuple(rated))),
     )
     service = CandidateGenerationService(
         _SessionFactory(), tmp_path, svd_depth=3, popularity_depth=3
@@ -158,13 +153,10 @@ def test_no_positive_profile_does_not_fall_back_to_mean_svd(
     _artifacts(tmp_path)
     monkeypatch.setattr(
         candidate_module.InteractionRepository,
-        "get_watched_film_ids",
-        AsyncMock(return_value=[1]),
-    )
-    monkeypatch.setattr(
-        candidate_module.InteractionRepository,
-        "get_rated_interactions",
-        AsyncMock(return_value=[RatedInteraction(1, 3.0)]),
+        "get_recommendation_history",
+        AsyncMock(
+            return_value=RecommendationHistory((1,), (RatedInteraction(1, 3.0),))
+        ),
     )
     service = CandidateGenerationService(
         _SessionFactory(), tmp_path, svd_depth=3, popularity_depth=2

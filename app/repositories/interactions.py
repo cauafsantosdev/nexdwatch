@@ -16,6 +16,14 @@ class RatedInteraction:
     rating: float
 
 
+@dataclass(frozen=True, slots=True)
+class RecommendationHistory:
+    """One bounded read of watched IDs and explicit ratings for policy inference."""
+
+    watched_film_ids: tuple[int, ...]
+    rated_interactions: tuple[RatedInteraction, ...]
+
+
 class InteractionRepository:
     """Read interactions used by the current SVD baseline."""
 
@@ -68,3 +76,17 @@ class InteractionRepository:
             RatedInteraction(film_id=int(film_id), rating=float(rating))
             for film_id, rating in result.all()
         ]
+
+    async def get_recommendation_history(self, user_id: int) -> RecommendationHistory:
+        """Load watched and rated history together without duplicate SQL reads."""
+        result = await self._session.execute(
+            select(Log.film_id, Log.rating).where(Log.user_id == user_id)
+        )
+        watched: list[int] = []
+        rated: list[RatedInteraction] = []
+        for film_id, rating in result.all():
+            normalized_id = int(film_id)
+            watched.append(normalized_id)
+            if rating is not None:
+                rated.append(RatedInteraction(normalized_id, float(rating)))
+        return RecommendationHistory(tuple(watched), tuple(rated))

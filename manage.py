@@ -1,4 +1,9 @@
+#!/usr/bin/env python3
+
 import asyncio
+import json
+import resource
+import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any
@@ -18,6 +23,7 @@ FILMS_CSV_PATH = str(DATA_DIR / "films_data.csv")
 LOGS_CSV_PATH = str(DATA_DIR / "users_data.csv")
 CANDIDATE_REPORT_PATH = DATA_DIR / "analysis" / "candidate_analysis.json"
 POPULARITY_ARTIFACT_PATH = DATA_DIR / "candidates" / "popularity.json"
+CATEGORY_POLICY_REPORT_PATH = DATA_DIR / "analysis" / "category_policy.json"
 
 
 @app.command()
@@ -183,6 +189,113 @@ async def _preview_candidates_async(
         watched_ids.intersection(candidate.film_id for candidate in result.candidates)
     )
     return result, {film.id: film.title for film in films}, watched_overlap
+
+
+@app.command("preview-categories")
+def preview_categories(
+    user_id: Annotated[int, typer.Argument(min=1)] = 3953,
+) -> None:
+    """Preview the internal categorized policy without changing public serving."""
+    from app.services.categorized_recommendation_service import (
+        CategorizedRecommendationService,
+    )
+
+    service = CategorizedRecommendationService()
+    started = time.perf_counter()
+    try:
+        result, load_ms, request_ms = asyncio.run(
+            _preview_categories_async(service, user_id)
+        )
+    except Exception as exc:
+        typer.echo(f"Category preview failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        service.unload_resources()
+    typer.echo(
+        f"user_id={user_id} categories={len(result.categories)} "
+        f"load_ms={load_ms:.2f} request_ms={request_ms:.2f} "
+        f"total_ms={(time.perf_counter() - started) * 1000:.2f} "
+        "peak_process_mib="
+        f"{resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.2f}"
+    )
+    for position, category in enumerate(result.categories, start=1):
+        typer.echo(
+            f"\n{position}. key={category.key} title={category.title!r} "
+            f"size={len(category.items)} role={category.role}"
+        )
+        for item in category.items:
+            typer.echo(
+                f"  film_id={item.film_id} title={item.title!r} "
+                f"reason={item.reason.code} rrf_rank={item.rrf_rank} "
+                f"stratum={item.popularity_stratum} source={item.source_membership}"
+            )
+    typer.echo("\nPolicy diagnostics:")
+    typer.echo(json.dumps(result.diagnostics, indent=2, sort_keys=True))
+
+
+async def _preview_categories_async(
+    service: Any, user_id: int
+) -> tuple[Any, float, float]:
+    load_started = time.perf_counter()
+    if not await service.load_resources():
+        raise RuntimeError("categorized recommendation resources are unavailable")
+    load_ms = (time.perf_counter() - load_started) * 1000
+    request_started = time.perf_counter()
+    result = await service.recommend(user_id)
+    request_ms = (time.perf_counter() - request_started) * 1000
+    return result, load_ms, request_ms
+
+
+@app.command("evaluate-categories")
+def evaluate_categories(
+    seeds: str = typer.Option("42,43,44", help="Comma-separated strict-fold seeds."),
+    folds: str = typer.Option("0,1,2,3,4", help="Comma-separated test folds."),
+    report_path: Annotated[
+        Path, typer.Option(help="Non-production JSON report path.")
+    ] = CATEGORY_POLICY_REPORT_PATH,
+) -> None:
+    """Evaluate categorized policy using context-only strict held-out folds."""
+    from experiments.category_policy.evaluate import run_category_policy_evaluation
+
+    try:
+        parsed_seeds = _parse_non_negative_integers(seeds)
+        parsed_folds = _parse_non_negative_integers(folds)
+        if any(fold > 4 for fold in parsed_folds):
+            raise ValueError
+    except ValueError as exc:
+        typer.echo(
+            "Seeds must be non-negative integers and folds must be in 0..4.",
+            err=True,
+        )
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"Evaluating category policy on seeds={parsed_seeds} folds={parsed_folds}..."
+    )
+    try:
+        report = run_category_policy_evaluation(
+            csv_path=LOGS_CSV_PATH,
+            output_path=report_path,
+            seeds=parsed_seeds,
+            folds=parsed_folds,
+        )
+    except Exception as exc:
+        typer.echo(f"Category-policy evaluation failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    portfolio = report["portfolio"]
+    typer.echo(
+        "Evaluation complete: "
+        f"users={report['evaluated_user_appearances']} "
+        f"mean_categories={portfolio['categories_per_user']['mean']:.3f} "
+        f"mean_unique_films={portfolio['unique_films_per_response']['mean']:.3f}"
+    )
+    typer.echo(f"Report: {report_path}")
+
+
+def _parse_non_negative_integers(value: str) -> tuple[int, ...]:
+    parsed = tuple(int(item.strip()) for item in value.split(","))
+    if not parsed or any(item < 0 for item in parsed):
+        raise ValueError
+    return parsed
 
 
 @app.command("analyze-candidates")

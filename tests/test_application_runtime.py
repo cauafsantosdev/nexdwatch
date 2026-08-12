@@ -25,6 +25,24 @@ def test_api_startup_import_does_not_load_research_ml_dependencies() -> None:
     assert result.returncode == 0, result.stderr
 
 
+def test_api_startup_does_not_activate_internal_categorized_policy() -> None:
+    script = (
+        "import sys; import app.main; "
+        "assert 'app.services.categorized_recommendation_service' not in sys.modules; "
+        "from app.services.recommendation_service import RECOMMENDATION_STRATEGY; "
+        "assert RECOMMENDATION_STRATEGY == 'SVD_Mean_Pooling'"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_standard_requirements_exclude_research_only_dependencies() -> None:
     requirements = Path("requirements.txt").read_text(encoding="utf-8").lower()
 
