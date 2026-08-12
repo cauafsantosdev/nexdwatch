@@ -1,6 +1,6 @@
-"""Centralized transparent defaults for categorized recommendation policy V1."""
+"""Centralized transparent defaults for categorized recommendation policy V1.1."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 @dataclass(frozen=True, slots=True)
@@ -40,6 +40,8 @@ class CategoryPolicyConfig:
     anchor_maximum: int = 20
     anchor_similarity_threshold: float = 0.0
     anchor_similarity_batch_size: int = 256
+    anchor_neighborhood_limit: int | None = 100
+    anchor_neighborhood_fraction: float | None = None
 
     directors_minimum: int = 8
     director_pool_size: int = 15
@@ -51,6 +53,7 @@ class CategoryPolicyConfig:
     world_supported_country_pool: int = 5
     world_country_cap: int = 5
     world_discovery_svd_rank: int = 500
+    world_head_cap: int | None = 12
     english_language_names: tuple[str, ...] = ("english",)
     english_core_country_names: tuple[str, ...] = (
         "usa",
@@ -64,14 +67,21 @@ class CategoryPolicyConfig:
     metadata_none_names: tuple[str, ...] = ("no spoken language",)
 
     outside_minimum: int = 12
-    outside_svd_rank: int = 500
-    outside_rrf_rank: int = 1000
+    outside_svd_rank: int = 750
+    outside_rrf_rank: int = 1250
+    outside_primary_svd_rank: int = 500
+    outside_primary_rrf_rank: int = 1000
+    outside_require_primary_viability: bool = True
     outside_familiar_entities_per_family: int = 1
     outside_minimum_familiar_families: int = 2
-    outside_exclude_head: bool = True
+    outside_exclude_head: bool = False
+    outside_exclude_hidden_neighborhood: bool = True
+    outside_lower_head_cap: int = 4
+    outside_lower_head_svd_rank: int = 100
 
     classic_year_boundary: int = 1969
     classic_minimum: int = 8
+    classic_head_cap: int | None = 12
 
     category_overlap_threshold: float = 0.70
     maximum_film_appearances: int = 2
@@ -85,3 +95,18 @@ class CategoryPolicyConfig:
 
 
 DEFAULT_POLICY_CONFIG = CategoryPolicyConfig()
+
+# Retained only for explicit V1-versus-V1.1 offline comparisons.
+V1_POLICY_CONFIG = replace(
+    DEFAULT_POLICY_CONFIG,
+    anchor_neighborhood_limit=None,
+    anchor_neighborhood_fraction=None,
+    world_head_cap=None,
+    outside_svd_rank=500,
+    outside_rrf_rank=1000,
+    outside_require_primary_viability=False,
+    outside_exclude_head=True,
+    outside_exclude_hidden_neighborhood=False,
+    outside_lower_head_cap=0,
+    classic_head_cap=None,
+)

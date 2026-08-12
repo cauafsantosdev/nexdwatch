@@ -1,6 +1,6 @@
-# Categorized recommendation policy V1
+# Categorized recommendation policy V1.1
 
-This package evaluates NexdWatch's first internal portfolio policy. It does not
+This package evaluates NexdWatch's internal portfolio policy. It does not
 participate in FastAPI startup or replace the live `SVD_Mean_Pooling` service.
 The frozen input is the existing 2,000 positive-weighted-SVD candidates plus
 2,000 controlled-popularity candidates, followed by exact equal-weight RRF with
@@ -29,7 +29,7 @@ languages. Unrated watches contribute only to exclusion and history depth.
 Qualification additionally requires support, positive/high-rating evidence,
 positive affinity, and (for directors) bounded contradictory negative evidence.
 
-## V1 semantic choices
+## Semantic choices
 
 - Brazilian cinema means any film whose available country metadata contains
   `Brazil` or `Brasil`. The schema does not identify a primary production
@@ -37,13 +37,22 @@ positive affinity, and (for directors) bounded contradictory negative evidence.
 - World Cinema requires both a non-core-English country association and a
   non-English language association. Core English countries are configured
   explicitly; user locale is not inferred.
-- Outside Your Usual Picks excludes HEAD films and requires positive SVD
-  retrieval within rank 500, RRF rank at most 1,000, and no match against the
-  strongest qualifying director, genre, decade, country, or language entities.
+- Outside Your Usual Picks requires positive SVD retrieval, no match against
+  the strongest qualifying director, genre, decade, country, or language
+  entities, and explicit exclusion of the Hidden-Gems neighborhood. The V1.1
+  depth is SVD rank 750/RRF rank 1,250. At most four HEAD items may enter, and
+  only when they are SVD-only and within SVD rank 100; all other HEAD items are
+  excluded.
 - Classic Cinema uses `year <= 1969` and positive personalized SVD evidence.
+  V1.1 caps HEAD at 12 items per row while preserving the relative RRF order of
+  selected candidates.
+- World Cinema retains its broad discovery semantics and maximum five films per
+  country, while V1.1 caps HEAD at 12 items per row.
 - Anchor rows prefer ratings at least 4.5. A 4.0 fallback is used only when no
-  4.5/5.0 indexed anchor exists. Candidate similarities are computed only over
-  the existing inventory in bounded vector batches.
+  4.5/5.0 indexed anchor exists. V1.1 defines the local neighborhood as the top
+  100 cosine neighbors in the existing candidate inventory. Similarities are
+  computed only over that inventory in bounded vector batches; this is not
+  full-catalog anchor retrieval.
 
 Every default and diversity limit is centralized in
 `app/policy/config.py`. These are transparent product-policy choices, not
@@ -65,8 +74,25 @@ ordinary held-out recall is secondary for serendipity.
 
 The sensitivity sample checks neighboring Hidden Gems depths, classic-year
 boundaries, minimum row sizes, overlap cutoffs, broad support, director-pool
-size, and the Outside-Usual HEAD exclusion. It is a diagnostic comparison, not
-a test-label optimization procedure.
+size, and unrestricted Outside-Usual HEAD admission. It is a diagnostic
+comparison, not a test-label optimization procedure.
+
+The V1.1 thresholds are selected using a context-only bounded comparison:
+
+```bash
+python manage.py analyze-category-refinement
+```
+
+Historical V1 evidence remains in `RESULTS.md`; V1.1 evidence is written to
+`RESULTS_V1_1.md` and a separate ignored machine-readable report.
+
+Deterministic paired qualitative previews and the warm loaded-service benchmark
+are available with:
+
+```bash
+python manage.py preview-category-refinement
+python manage.py benchmark-categories --user-ids 3318,3569,3155,2825,3953,2474,2994,3724 --repetitions 3
+```
 
 For a persisted read-only preview:
 

@@ -47,16 +47,24 @@ class CategorizedRecommendationService:
     def is_loaded(self) -> bool:
         return self._candidate_service.is_loaded and self._catalog is not None
 
-    async def load_resources(self) -> bool:
-        """Load immutable artifacts and one bounded policy catalog snapshot."""
-        if not self._candidate_service.load_artifacts():
-            return False
+    def load_candidate_artifacts(self) -> bool:
+        """Load frozen candidate artifacts separately for resource measurement."""
+        return self._candidate_service.load_artifacts()
+
+    async def load_policy_catalog(self) -> bool:
+        """Load and intern the bounded policy metadata snapshot."""
         svd = self._candidate_service.svd_artifacts
         if svd is None:
             return False
         async with self._session_factory() as session:
             self._catalog = await load_policy_catalog(session, svd.film_index)
         return True
+
+    async def load_resources(self) -> bool:
+        """Load immutable artifacts and one bounded policy catalog snapshot."""
+        if not self.load_candidate_artifacts():
+            return False
+        return await self.load_policy_catalog()
 
     def unload_resources(self) -> None:
         self._candidate_service.unload_artifacts()

@@ -231,6 +231,16 @@ def _passes_diversity(
     film = catalog.film(film_id)
     if film is None:
         return False
+    maximum_head_count = proposal.policy_metadata.get("maximum_head_count")
+    head_candidate_ids = proposal.policy_metadata.get("head_candidate_ids")
+    if (
+        isinstance(maximum_head_count, int)
+        and isinstance(head_candidate_ids, frozenset)
+        and film_id in head_candidate_ids
+        and sum(value in head_candidate_ids for value in selected_ids)
+        >= maximum_head_count
+    ):
+        return False
     selected = [value for film_id in selected_ids if (value := catalog.film(film_id))]
     director_cap = (
         config.director_film_cap

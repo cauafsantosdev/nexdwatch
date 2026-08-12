@@ -1,4 +1,4 @@
-"""Strict held-out and portfolio diagnostics for categorized recommendation V1."""
+"""Strict held-out and portfolio diagnostics for category policy V1.1."""
 
 import asyncio
 import json
@@ -26,7 +26,11 @@ from app.ml.svd_profiles import build_svd_profile
 from app.policy.catalog import PolicyCatalog, PolicyFilm, load_policy_catalog
 from app.policy.config import DEFAULT_POLICY_CONFIG, CategoryPolicyConfig
 from app.policy.engine import CategorizedPolicyEngine
-from app.policy.profile import build_user_category_profile, qualifying_preferences
+from app.policy.profile import (
+    build_user_category_profile,
+    preference_evidence_tier,
+    qualifying_preferences,
+)
 from app.policy.proposals import CATEGORY_KEYS
 from app.policy.ranking import rank_candidates_by_rrf
 from app.repositories.interactions import RatedInteraction, RecommendationHistory
@@ -44,7 +48,7 @@ from experiments.ranker.rrf_calibration import (
     _full_candidates,
 )
 
-CATEGORY_POLICY_PROTOCOL = f"{RANKER_PROTOCOL}_category_policy_v1"
+CATEGORY_POLICY_PROTOCOL = f"{RANKER_PROTOCOL}_category_policy_v1_1"
 SENSITIVITY_SAMPLE_STRIDE = 25
 
 
@@ -63,7 +67,7 @@ def run_category_policy_evaluation(
     mapping = load_catalog_slug_mapping(active)
     data = load_historical_interactions(csv_path, mapping)
     catalog = asyncio.run(_load_catalog(data.film_ids))
-    aggregate = _EvaluationAccumulator(len(data.film_ids))
+    aggregate = _EvaluationAccumulator(len(data.film_ids), config)
     sensitivity = _SensitivityAccumulator()
     observation_index = 0
     fold_runtime: list[dict[str, Any]] = []
@@ -238,8 +242,9 @@ def _target_personalized_score(
 
 
 class _EvaluationAccumulator:
-    def __init__(self, catalog_size: int) -> None:
+    def __init__(self, catalog_size: int, config: CategoryPolicyConfig) -> None:
         self.catalog_size = catalog_size
+        self.config = config
         self.user_count = 0
         self.category_counts: list[int] = []
         self.unique_counts: list[int] = []
@@ -261,11 +266,15 @@ class _EvaluationAccumulator:
         }
         self.anchor: list[dict[str, Any]] = []
         self.director_pool: list[dict[str, Any]] = []
+        self.director_selected: list[Any] = []
+        self.director_not_selected: list[Any] = []
         self.outside_svd_ranks: list[int] = []
         self.outside_top_overlap: list[float] = []
         self.outside_familiar_match_rate: list[float] = []
         self.world_distinct_countries: list[int] = []
         self.world_max_country_share: list[float] = []
+        self.world_preference_supported = 0
+        self.world_discovery_derived = 0
 
     def observe(
         self,
@@ -344,6 +353,11 @@ class _EvaluationAccumulator:
                     familiar_matches / len(category.film_ids)
                 )
             if key == "world_cinema":
+                for film_id in category.film_ids:
+                    if category.proposal.reasons[film_id].support_count is None:
+                        self.world_discovery_derived += 1
+                    else:
+                        self.world_preference_supported += 1
                 country_counts = Counter(
                     entity.name
                     for film_id in category.film_ids
@@ -365,6 +379,13 @@ class _EvaluationAccumulator:
         if selected_anchor:
             self.anchor.append(selected_anchor)
         self.director_pool.append(result.diagnostics["director_pool"])
+        qualifying_directors = qualifying_preferences(
+            profile, "director", config=config
+        )
+        self.director_selected.extend(qualifying_directors[: config.director_pool_size])
+        self.director_not_selected.extend(
+            qualifying_directors[config.director_pool_size :]
+        )
 
         candidate_ids = set(ranked_by_id)
         for key in CATEGORY_KEYS:
@@ -477,6 +498,19 @@ class _EvaluationAccumulator:
                 "top_picks_overlap": _summary(
                     [float(value["top_picks_overlap"]) for value in self.anchor]
                 ),
+                "mean_top_20_similarity": _summary(
+                    [float(value["mean_top_20_similarity"]) for value in self.anchor]
+                ),
+                "local_similarity_cutoff": _summary(
+                    [float(value["local_similarity_cutoff"]) for value in self.anchor]
+                ),
+                "neighborhood_rules": dict(
+                    sorted(
+                        Counter(
+                            str(value["neighborhood_rule"]) for value in self.anchor
+                        ).items()
+                    )
+                ),
             },
             "director_pool_diagnostics": {
                 "qualifying_count": _summary(
@@ -484,6 +518,12 @@ class _EvaluationAccumulator:
                 ),
                 "selected_count": _summary(
                     [int(value["selected_count"]) for value in self.director_pool]
+                ),
+                "selected_evidence": _preference_distribution(
+                    self.director_selected, self.config
+                ),
+                "qualifying_not_selected_evidence": _preference_distribution(
+                    self.director_not_selected, self.config
                 ),
             },
             "outside_usual_diagnostics": {
@@ -497,6 +537,20 @@ class _EvaluationAccumulator:
             "world_cinema_geography": {
                 "distinct_countries_per_row": _summary(self.world_distinct_countries),
                 "maximum_country_share": _summary(self.world_max_country_share),
+                "item_origin": {
+                    "preference_supported": self.world_preference_supported,
+                    "discovery_derived": self.world_discovery_derived,
+                    "preference_supported_fraction": (
+                        self.world_preference_supported
+                        / (
+                            self.world_preference_supported
+                            + self.world_discovery_derived
+                        )
+                        if self.world_preference_supported
+                        + self.world_discovery_derived
+                        else 0.0
+                    ),
+                },
             },
         }
 
@@ -585,7 +639,11 @@ def _sensitivity_variants(
         "broad_support_6": replace(config, broad_minimum_support=6),
         "director_pool_10": replace(config, director_pool_size=10),
         "director_pool_20": replace(config, director_pool_size=20),
-        "outside_allow_head": replace(config, outside_exclude_head=False),
+        "outside_unrestricted_head": replace(
+            config,
+            outside_exclude_head=False,
+            outside_lower_head_cap=0,
+        ),
     }
 
 
@@ -629,13 +687,21 @@ def _semantic_scope(
         if proposal is None:
             return False
         anchor_id = proposal.policy_metadata["anchor_film_id"]
-        return (
-            anchor_id in id_to_position
-            and target_id in id_to_position
-            and float(
+        similarity_cutoff = proposal.policy_metadata.get(
+            "local_similarity_cutoff", config.anchor_similarity_threshold
+        )
+        local_rule = proposal.policy_metadata.get("neighborhood_rule")
+        target_similarity = (
+            float(
                 vectors[id_to_position[anchor_id]] @ vectors[id_to_position[target_id]]
             )
-            > config.anchor_similarity_threshold
+            if anchor_id in id_to_position and target_id in id_to_position
+            else None
+        )
+        return target_similarity is not None and (
+            target_similarity >= similarity_cutoff
+            if local_rule != "legacy_positive_similarity"
+            else target_similarity > config.anchor_similarity_threshold
         )
     if key == "directors_you_love":
         qualified = qualifying_preferences(profile, "director", config=config)[
@@ -701,6 +767,19 @@ def _is_world(film: PolicyFilm, config: CategoryPolicyConfig) -> bool:
         and value.name.casefold() not in config.metadata_none_names
         for value in film.languages
     )
+
+
+def _preference_distribution(values, config) -> dict[str, Any]:
+    tiers = Counter(preference_evidence_tier(value, config=config) for value in values)
+    return {
+        "records": len(values),
+        "support_count": _summary([value.support_count for value in values]),
+        "mean_rating": _summary([value.mean_rating for value in values]),
+        "high_rating_count": _summary([value.high_rating_count for value in values]),
+        "positive_fraction": _summary([value.positive_fraction for value in values]),
+        "affinity": _summary([value.affinity for value in values]),
+        "evidence_tiers": dict(sorted(tiers.items())),
+    }
 
 
 def _summary(values: list[int | float]) -> dict[str, float | int | None]:

@@ -84,6 +84,9 @@ async def load_policy_catalog(
     memberships: dict[str, dict[int, list[PolicyEntity]]] = {
         family: {} for family in relation_specs
     }
+    entity_pools: dict[str, dict[int, PolicyEntity]] = {
+        family: {} for family in relation_specs
+    }
     for family, (association, model, entity_column) in relation_specs.items():
         result = await session.execute(
             select(association.c.film_id, model.id, model.name).join(
@@ -94,9 +97,12 @@ async def load_policy_catalog(
         for film_id, entity_id, name in result:
             normalized_film_id = int(film_id)
             if normalized_film_id in allowed:
-                grouped.setdefault(normalized_film_id, []).append(
-                    PolicyEntity(int(entity_id), str(name))
-                )
+                normalized_entity_id = int(entity_id)
+                entity = entity_pools[family].get(normalized_entity_id)
+                if entity is None:
+                    entity = PolicyEntity(normalized_entity_id, str(name))
+                    entity_pools[family][normalized_entity_id] = entity
+                grouped.setdefault(normalized_film_id, []).append(entity)
 
     films = {
         film_id: PolicyFilm(

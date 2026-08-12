@@ -133,16 +133,7 @@ def _hidden_gems(
     eligible = [
         candidate
         for candidate in ranked
-        if candidate.retrieved_by_svd
-        and candidate.svd_score is not None
-        and candidate.svd_score > 0
-        and candidate.svd_rank is not None
-        and (
-            candidate.popularity_stratum == "MID"
-            and candidate.svd_rank <= config.hidden_mid_svd_rank
-            or candidate.popularity_stratum == "TAIL"
-            and candidate.svd_rank <= config.hidden_tail_svd_rank
-        )
+        if _is_hidden_neighborhood_candidate(candidate, profile, config)
     ]
     return _generic_proposal(
         key="hidden_gems",
@@ -378,6 +369,7 @@ def _world_cinema(
         policy_metadata={
             "countries": [_preference_summary(value) for value in country_preferences],
             "languages": [_preference_summary(value) for value in language_preferences],
+            **_head_balance_metadata(eligible, config.world_head_cap),
         },
     )
 
@@ -403,15 +395,10 @@ def _outside_usual(
     ):
         return None
     eligible = []
+    primary_eligible_count = 0
     for candidate in ranked:
-        if (
-            not _positive_svd_evidence(candidate)
-            or candidate.svd_rank is None
-            or candidate.svd_rank > config.outside_svd_rank
-            or candidate.rrf_rank > config.outside_rrf_rank
-            or config.outside_exclude_head
-            and candidate.popularity_stratum == "HEAD"
-        ):
+        is_lower_head = candidate.popularity_stratum == "HEAD"
+        if not _positive_svd_evidence(candidate) or candidate.svd_rank is None:
             continue
         film = catalog.film(candidate.film_id)
         if film is None or any(
@@ -419,7 +406,34 @@ def _outside_usual(
             for family in familiar
         ):
             continue
+        if candidate.rrf_rank > config.outside_rrf_rank:
+            continue
+        if is_lower_head:
+            if config.outside_exclude_head:
+                continue
+            if config.outside_lower_head_cap > 0 and (
+                candidate.retrieved_by_popularity
+                or candidate.svd_rank > config.outside_lower_head_svd_rank
+            ):
+                continue
+        elif candidate.svd_rank > config.outside_svd_rank:
+            continue
+        if config.outside_exclude_hidden_neighborhood and (
+            _is_hidden_neighborhood_candidate(candidate, profile, config)
+        ):
+            continue
+        if (
+            not is_lower_head
+            and candidate.svd_rank <= config.outside_primary_svd_rank
+            and candidate.rrf_rank <= config.outside_primary_rrf_rank
+        ):
+            primary_eligible_count += 1
         eligible.append(candidate)
+    if (
+        config.outside_require_primary_viability
+        and primary_eligible_count < config.outside_minimum
+    ):
+        return None
     eligible.sort(
         key=lambda value: (
             value.svd_rank if value.svd_rank is not None else 10**9,
@@ -440,7 +454,19 @@ def _outside_usual(
         policy_metadata={
             "familiar_entities": {
                 family: sorted(values) for family, values in familiar.items()
-            }
+            },
+            "excluded_hidden_neighborhood": (
+                config.outside_exclude_hidden_neighborhood
+            ),
+            "primary_eligible_count": primary_eligible_count,
+            **_head_balance_metadata(
+                eligible,
+                (
+                    config.outside_lower_head_cap
+                    if config.outside_lower_head_cap > 0
+                    else None
+                ),
+            ),
         },
     )
 
@@ -476,7 +502,10 @@ def _classic_cinema(
         maximum=config.default_maximum,
         reason_code=RecommendationReasonCode.CLASSIC_CINEMA_DISCOVERY,
         evidence_support=profile.indexed_positive_count,
-        policy_metadata={"year_boundary": config.classic_year_boundary},
+        policy_metadata={
+            "year_boundary": config.classic_year_boundary,
+            **_head_balance_metadata(eligible, config.classic_head_cap),
+        },
     )
 
 
@@ -516,7 +545,8 @@ def _because_you_liked(
     valid_anchors = tuple(
         anchor for anchor in anchors if anchor.film_id in id_to_position
     )
-    neighborhoods: list[tuple[Any, float, int, float]] = []
+    neighborhood_size = _anchor_neighborhood_size(config, len(candidate_ids))
+    neighborhoods: list[tuple[Any, float, int, float, float]] = []
     for start in range(0, len(valid_anchors), config.anchor_similarity_batch_size):
         batch = valid_anchors[start : start + config.anchor_similarity_batch_size]
         anchor_matrix = np.ascontiguousarray(
@@ -525,9 +555,19 @@ def _because_you_liked(
         )
         batch_similarities = anchor_matrix @ candidate_matrix.T
         for anchor, similarities in zip(batch, batch_similarities, strict=True):
-            usable_indices = np.flatnonzero(
-                np.isfinite(similarities)
-                & (similarities > config.anchor_similarity_threshold)
+            finite_indices = np.flatnonzero(np.isfinite(similarities))
+            usable_indices = (
+                _top_neighbor_indices(
+                    similarities,
+                    finite_indices,
+                    candidate_id_array,
+                    candidate_rrf_ranks,
+                    neighborhood_size,
+                )
+                if neighborhood_size is not None
+                else finite_indices[
+                    similarities[finite_indices] > config.anchor_similarity_threshold
+                ]
             )
             if len(usable_indices) < config.anchor_minimum:
                 continue
@@ -540,8 +580,15 @@ def _because_you_liked(
             )
             mean_similarity = float(np.mean(similarities[top_indices]))
             overlap = _jaccard(set(candidate_id_array[top_indices].tolist()), top_picks)
+            similarity_cutoff = float(np.min(similarities[usable_indices]))
             neighborhoods.append(
-                (anchor, mean_similarity, len(usable_indices), overlap)
+                (
+                    anchor,
+                    mean_similarity,
+                    len(usable_indices),
+                    overlap,
+                    similarity_cutoff,
+                )
             )
     if not neighborhoods:
         return None, {"eligible_anchors": len(anchors), "selected": None}
@@ -555,10 +602,21 @@ def _because_you_liked(
             value[0].film_id,
         ),
     )
-    anchor, mean_similarity, usable_count, overlap = selected
+    anchor, mean_similarity, usable_count, overlap, similarity_cutoff = selected
     similarities = candidate_matrix @ item_vectors[id_to_position[anchor.film_id]]
-    usable_indices = np.flatnonzero(
-        np.isfinite(similarities) & (similarities > config.anchor_similarity_threshold)
+    finite_indices = np.flatnonzero(np.isfinite(similarities))
+    usable_indices = (
+        _top_neighbor_indices(
+            similarities,
+            finite_indices,
+            candidate_id_array,
+            candidate_rrf_ranks,
+            neighborhood_size,
+        )
+        if neighborhood_size is not None
+        else finite_indices[
+            similarities[finite_indices] > config.anchor_similarity_threshold
+        ]
     )
     order = np.lexsort(
         (
@@ -596,12 +654,39 @@ def _because_you_liked(
             "mean_top_20_similarity": mean_similarity,
             "usable_neighbor_count": usable_count,
             "top_picks_overlap": overlap,
+            "neighborhood_rule": _anchor_neighborhood_rule(config),
+            "local_similarity_cutoff": similarity_cutoff,
         },
     )
     return proposal, {
         "eligible_anchors": len(anchors),
         "selected": proposal.policy_metadata,
     }
+
+
+def _anchor_neighborhood_size(
+    config: CategoryPolicyConfig, candidate_count: int
+) -> int | None:
+    if config.anchor_neighborhood_limit is not None:
+        return min(config.anchor_neighborhood_limit, candidate_count)
+    if config.anchor_neighborhood_fraction is not None:
+        return min(
+            candidate_count,
+            max(
+                config.anchor_minimum,
+                int(np.ceil(candidate_count * config.anchor_neighborhood_fraction)),
+            ),
+        )
+    return None
+
+
+def _anchor_neighborhood_rule(config: CategoryPolicyConfig) -> str:
+    if config.anchor_neighborhood_limit is not None:
+        return f"top_{config.anchor_neighborhood_limit}"
+    if config.anchor_neighborhood_fraction is not None:
+        percentage = round(config.anchor_neighborhood_fraction * 100)
+        return f"top_{percentage}_percent"
+    return "legacy_positive_similarity"
 
 
 def _top_neighbor_indices(
@@ -778,6 +863,39 @@ def _positive_svd_evidence(candidate: RankedCandidate) -> bool:
         and candidate.svd_score is not None
         and candidate.svd_score > 0
     )
+
+
+def _is_hidden_neighborhood_candidate(
+    candidate: RankedCandidate,
+    profile: UserCategoryProfile,
+    config: CategoryPolicyConfig,
+) -> bool:
+    return (
+        profile.indexed_positive_count >= config.hidden_minimum_indexed_positives
+        and _positive_svd_evidence(candidate)
+        and candidate.svd_rank is not None
+        and (
+            candidate.popularity_stratum == "MID"
+            and candidate.svd_rank <= config.hidden_mid_svd_rank
+            or candidate.popularity_stratum == "TAIL"
+            and candidate.svd_rank <= config.hidden_tail_svd_rank
+        )
+    )
+
+
+def _head_balance_metadata(
+    candidates: list[RankedCandidate], head_cap: int | None
+) -> dict[str, Any]:
+    if head_cap is None:
+        return {}
+    return {
+        "maximum_head_count": head_cap,
+        "head_candidate_ids": frozenset(
+            candidate.film_id
+            for candidate in candidates
+            if candidate.popularity_stratum == "HEAD"
+        ),
+    }
 
 
 def _is_brazilian(film: PolicyFilm | None, config: CategoryPolicyConfig) -> bool:

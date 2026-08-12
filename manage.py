@@ -23,7 +23,16 @@ FILMS_CSV_PATH = str(DATA_DIR / "films_data.csv")
 LOGS_CSV_PATH = str(DATA_DIR / "users_data.csv")
 CANDIDATE_REPORT_PATH = DATA_DIR / "analysis" / "candidate_analysis.json"
 POPULARITY_ARTIFACT_PATH = DATA_DIR / "candidates" / "popularity.json"
-CATEGORY_POLICY_REPORT_PATH = DATA_DIR / "analysis" / "category_policy.json"
+CATEGORY_POLICY_REPORT_PATH = DATA_DIR / "analysis" / "category_policy_v1_1.json"
+CATEGORY_REFINEMENT_REPORT_PATH = (
+    DATA_DIR / "analysis" / "category_policy_refinement.json"
+)
+CATEGORY_BENCHMARK_REPORT_PATH = (
+    DATA_DIR / "analysis" / "category_policy_benchmark.json"
+)
+CATEGORY_QUALITATIVE_REPORT_PATH = (
+    DATA_DIR / "analysis" / "category_policy_qualitative.json"
+)
 
 
 @app.command()
@@ -287,6 +296,116 @@ def evaluate_categories(
         f"users={report['evaluated_user_appearances']} "
         f"mean_categories={portfolio['categories_per_user']['mean']:.3f} "
         f"mean_unique_films={portfolio['unique_films_per_response']['mean']:.3f}"
+    )
+    typer.echo(f"Report: {report_path}")
+
+
+@app.command("analyze-category-refinement")
+def analyze_category_refinement(
+    sample_stride: Annotated[
+        int, typer.Option(min=1, help="Deterministic context-user sample stride.")
+    ] = 5,
+    report_path: Annotated[
+        Path, typer.Option(help="Non-production refinement diagnostics path.")
+    ] = CATEGORY_REFINEMENT_REPORT_PATH,
+) -> None:
+    """Compare bounded V1.1 alternatives without using held-out labels."""
+    from experiments.category_policy.refinement import run_refinement_analysis
+
+    typer.echo(
+        "Analyzing context-only category refinements "
+        f"with sample_stride={sample_stride}..."
+    )
+    try:
+        report = run_refinement_analysis(
+            csv_path=LOGS_CSV_PATH,
+            output_path=report_path,
+            sample_stride=sample_stride,
+        )
+    except Exception as exc:
+        typer.echo(f"Category refinement analysis failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"Refinement analysis complete: users={report['sampled_users']} "
+        f"runtime_seconds={report['runtime_seconds']:.2f}"
+    )
+    typer.echo(f"Report: {report_path}")
+
+
+@app.command("benchmark-categories")
+def benchmark_categories(
+    user_ids: str = typer.Option(
+        "3953", help="Comma-separated persisted user IDs for sequential requests."
+    ),
+    repetitions: Annotated[
+        int, typer.Option(min=1, max=10, help="Uninstrumented passes per user.")
+    ] = 2,
+    report_path: Annotated[
+        Path, typer.Option(help="Non-production benchmark report path.")
+    ] = CATEGORY_BENCHMARK_REPORT_PATH,
+) -> None:
+    """Benchmark warm category-policy latency and steady-state memory."""
+    from experiments.category_policy.benchmark import run_warm_category_benchmark
+
+    try:
+        parsed_user_ids = tuple(int(value.strip()) for value in user_ids.split(","))
+        if not parsed_user_ids or any(value <= 0 for value in parsed_user_ids):
+            raise ValueError
+    except ValueError as exc:
+        typer.echo("Benchmark user IDs must be positive integers.", err=True)
+        raise typer.Exit(code=1) from exc
+    try:
+        report = run_warm_category_benchmark(
+            user_ids=parsed_user_ids,
+            repetitions=repetitions,
+            output_path=report_path,
+        )
+    except Exception as exc:
+        typer.echo(f"Category benchmark failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    resources = report["resource_loading"]
+    latency = report["warm_request_latency_ms"]
+    typer.echo(
+        f"artifact_load_ms={resources['artifact_load_ms']:.2f} "
+        f"catalog_load_ms={resources['policy_catalog_load_ms']:.2f} "
+        "steady_rss_mib="
+        f"{resources['steady_state_rss_after_load_mib']:.2f} "
+        f"warm_request_mean_ms={latency['mean']:.2f} "
+        f"warm_request_median_ms={latency['median']:.2f}"
+    )
+    typer.echo(f"Report: {report_path}")
+
+
+@app.command("preview-category-refinement")
+def preview_category_refinement(
+    user_ids: str = typer.Option(
+        "3318,3569,3155,2825,3953,2504,2474,2994,3724",
+        help="Comma-separated shallow, medium, and deep persisted user IDs.",
+    ),
+    report_path: Annotated[
+        Path, typer.Option(help="Non-production qualitative review path.")
+    ] = CATEGORY_QUALITATIVE_REPORT_PATH,
+) -> None:
+    """Produce deterministic V1/V1.1 examples without changing public serving."""
+    from experiments.category_policy.qualitative import run_qualitative_previews
+
+    try:
+        parsed_user_ids = tuple(int(value.strip()) for value in user_ids.split(","))
+        if not parsed_user_ids or any(value <= 0 for value in parsed_user_ids):
+            raise ValueError
+    except ValueError as exc:
+        typer.echo("Preview user IDs must be positive integers.", err=True)
+        raise typer.Exit(code=1) from exc
+    try:
+        report = run_qualitative_previews(
+            user_ids=parsed_user_ids, output_path=report_path
+        )
+    except Exception as exc:
+        typer.echo(f"Qualitative category preview failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        "Qualitative previews complete: "
+        f"users={len(report['user_ids'])} versions=v1,v1_1"
     )
     typer.echo(f"Report: {report_path}")
 

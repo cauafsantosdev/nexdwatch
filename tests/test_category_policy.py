@@ -1,4 +1,6 @@
+import asyncio
 from dataclasses import replace
+from unittest.mock import AsyncMock
 
 import numpy as np
 
@@ -14,8 +16,13 @@ from app.domain.categorized_recommendations import (
     UserCategoryProfile,
 )
 from app.policy.allocation import allocate_categories
-from app.policy.catalog import PolicyCatalog, PolicyEntity, PolicyFilm
-from app.policy.config import DEFAULT_POLICY_CONFIG
+from app.policy.catalog import (
+    PolicyCatalog,
+    PolicyEntity,
+    PolicyFilm,
+    load_policy_catalog,
+)
+from app.policy.config import DEFAULT_POLICY_CONFIG, V1_POLICY_CONFIG
 from app.policy.profile import (
     build_user_category_profile,
     qualifying_preferences,
@@ -239,6 +246,7 @@ def test_brazil_world_outside_and_classic_eligibility_are_constrained() -> None:
             film_id,
             stratum="MID" if film_id <= 25 else "HEAD",
             svd_rank=film_id,
+            popularity_rank=film_id if film_id == 30 else None,
         )
         for film_id in range(1, 31)
     )
@@ -254,6 +262,7 @@ def test_brazil_world_outside_and_classic_eligibility_are_constrained() -> None:
         world_country_cap=5,
         classic_minimum=3,
         outside_minimum=3,
+        outside_exclude_hidden_neighborhood=False,
     )
     result = build_category_proposals(
         ranked,
@@ -277,7 +286,17 @@ def test_brazil_world_outside_and_classic_eligibility_are_constrained() -> None:
     outside = by_key["outside_usual"].ordered_candidate_ids
     assert outside
     assert all(film_id > 15 for film_id in outside)
-    assert all(ranked[film_id - 1].popularity_stratum != "HEAD" for film_id in outside)
+    assert 30 not in outside
+    assert all(
+        candidate.popularity_stratum != "HEAD"
+        or (
+            candidate.retrieved_by_svd
+            and not candidate.retrieved_by_popularity
+            and candidate.svd_rank <= config.outside_lower_head_svd_rank
+        )
+        for candidate in (ranked[film_id - 1] for film_id in outside)
+    )
+    assert by_key["outside_usual"].policy_metadata["maximum_head_count"] == 4
 
 
 def test_anchor_selection_prefers_lower_top_picks_overlap_after_equal_quality() -> None:
@@ -411,6 +430,152 @@ def test_anchor_uses_documented_four_star_fallback_only_when_needed() -> None:
 
     assert proposal.evidence_tier == "minimum"
     assert proposal.policy_metadata["anchor_rating"] == 4.0
+
+
+def test_anchor_v1_1_uses_exact_top_100_inventory_neighborhood() -> None:
+    films = [PolicyFilm(film_id, str(film_id), 2000) for film_id in range(1, 152)]
+    ranked = tuple(
+        _ranked(film_id, film_id - 1, svd_rank=film_id - 1) for film_id in range(2, 152)
+    )
+    similarities = np.linspace(0.99, 0.01, 150, dtype=np.float32)
+    vectors = np.zeros((151, 2), dtype=np.float32)
+    vectors[0] = [1.0, 0.0]
+    vectors[1:, 0] = similarities
+    vectors[1:, 1] = np.sqrt(1 - similarities**2)
+
+    result = build_category_proposals(
+        ranked,
+        _profile(anchors=(AnchorPreference(1, "Anchor", 5.0),)),
+        _catalog(films),
+        vectors,
+        {film_id: film_id - 1 for film_id in range(1, 152)},
+    )
+    proposal = next(
+        value for value in result.proposals if value.key == "because_you_liked"
+    )
+
+    assert len(proposal.ordered_candidate_ids) == 100
+    assert proposal.ordered_candidate_ids == tuple(range(2, 102))
+    assert proposal.policy_metadata["neighborhood_rule"] == "top_100"
+    assert proposal.policy_metadata["usable_neighbor_count"] == 100
+
+
+def test_balanced_category_hard_caps_head_while_filling_with_mid_tail() -> None:
+    films = [PolicyFilm(film_id, str(film_id), 2000) for film_id in range(1, 61)]
+    reason = RecommendationReason(RecommendationReasonCode.GLOBAL_RRF)
+    top = CategoryProposal(
+        "top_picks",
+        "general",
+        CategoryRole.GENERAL,
+        "Top",
+        {},
+        "strong",
+        20,
+        tuple(range(41, 61)),
+        1,
+        20,
+        {film_id: reason for film_id in range(41, 61)},
+    )
+    balanced = CategoryProposal(
+        "classic_cinema",
+        "classic",
+        CategoryRole.CULTURAL,
+        "Classic",
+        {},
+        "strong",
+        40,
+        tuple(range(1, 41)),
+        8,
+        20,
+        {film_id: reason for film_id in range(1, 41)},
+        {
+            "maximum_head_count": 12,
+            "head_candidate_ids": frozenset(range(1, 21)),
+        },
+    )
+
+    allocated, _ = allocate_categories((top, balanced), _profile(), _catalog(films))
+    selected = allocated[1].film_ids
+
+    assert len(selected) == 20
+    assert sum(film_id <= 20 for film_id in selected) == 12
+    assert selected == (*range(1, 13), *range(21, 29))
+
+
+def test_outside_v1_1_uses_viable_deeper_pool_outside_hidden_neighborhood() -> None:
+    drama = _entity(1, "Drama")
+    horror = _entity(2, "Horror")
+    usa = _entity(10, "USA")
+    japan = _entity(11, "Japan")
+    films = [
+        PolicyFilm(
+            film_id,
+            str(film_id),
+            2000,
+            genres=(horror,),
+            countries=(japan,),
+        )
+        for film_id in range(1, 1001)
+    ]
+    ranked = tuple(
+        _ranked(film_id, film_id, stratum="TAIL", svd_rank=film_id)
+        for film_id in range(1, 1001)
+    )
+    profile = _profile(
+        preferences={
+            "genre": (_preference("genre", drama.id, drama.name),),
+            "country": (_preference("country", usa.id, usa.name),),
+        }
+    )
+    result = build_category_proposals(
+        ranked,
+        profile,
+        _catalog(films),
+        np.eye(1, dtype=np.float32),
+        {},
+    )
+    by_key = {value.key: value for value in result.proposals}
+
+    assert by_key["hidden_gems"].ordered_candidate_ids[:20] == tuple(range(1, 21))
+    assert by_key["outside_usual"].ordered_candidate_ids[:20] == tuple(range(251, 271))
+    assert set(by_key["hidden_gems"].ordered_candidate_ids).isdisjoint(
+        by_key["outside_usual"].ordered_candidate_ids
+    )
+
+
+def test_policy_catalog_interns_repeated_relation_entities() -> None:
+    session = type("Session", (), {})()
+    session.execute = AsyncMock(
+        side_effect=[
+            [(1, "One", 2000), (2, "Two", 2001)],
+            [(1, 7, "Director"), (2, 7, "Director")],
+            [],
+            [],
+            [],
+        ]
+    )
+
+    catalog = asyncio.run(load_policy_catalog(session, (1, 2)))
+
+    assert catalog.films[1].directors[0] is catalog.films[2].directors[0]
+    assert session.execute.await_count == 5
+
+
+def test_v1_baseline_is_retained_only_for_explicit_comparison() -> None:
+    assert DEFAULT_POLICY_CONFIG.anchor_neighborhood_limit == 100
+    assert DEFAULT_POLICY_CONFIG.classic_head_cap == 12
+    assert DEFAULT_POLICY_CONFIG.world_head_cap == 12
+    assert DEFAULT_POLICY_CONFIG.outside_exclude_hidden_neighborhood
+    assert not DEFAULT_POLICY_CONFIG.outside_exclude_head
+    assert DEFAULT_POLICY_CONFIG.outside_lower_head_cap == 4
+    assert DEFAULT_POLICY_CONFIG.outside_svd_rank == 750
+    assert V1_POLICY_CONFIG.anchor_neighborhood_limit is None
+    assert V1_POLICY_CONFIG.classic_head_cap is None
+    assert V1_POLICY_CONFIG.world_head_cap is None
+    assert not V1_POLICY_CONFIG.outside_exclude_hidden_neighborhood
+    assert V1_POLICY_CONFIG.outside_exclude_head
+    assert V1_POLICY_CONFIG.outside_lower_head_cap == 0
+    assert not V1_POLICY_CONFIG.outside_require_primary_viability
 
 
 def test_allocation_reserves_top_ten_allows_two_appearances_and_relaxes_soft_caps() -> (
