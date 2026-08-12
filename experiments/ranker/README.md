@@ -1,4 +1,4 @@
-# Offline LambdaRank benchmark
+# Offline ranking research
 
 This package is an isolated research pipeline. It does not alter the production
 candidate policy or FastAPI recommendation path. Each fold builds temporary SVD,
@@ -33,7 +33,7 @@ Smoke-test seed 42/fold 0 first:
 
 ```bash
 /tmp/nexdwatch-ranker-venv/bin/python -m experiments.ranker \
-  --csv-path notebooks/data/users_data.csv \
+  --csv-path data/users_data.csv \
   --output-root notebooks/data/ranker_full_pool_v2 \
   --seeds 42 --folds 0
 ```
@@ -47,3 +47,24 @@ the ignored research output root. Never commit those generated artifacts.
 
 The completed full-pool result and the decision not to pass the expensive-control
 gate are documented in [RESULTS.md](RESULTS.md).
+
+## Weighted-RRF calibration
+
+The lightweight `rrf_calibration` runner reuses the same 15 strict folds and
+train-user-only artifacts without building feature matrices or importing
+LightGBM. It evaluates the bounded 28-point weight/`k` grid on validation first,
+freezes both the per-fold choices and one validation-only fixed recommendation,
+and only then evaluates test users:
+
+```bash
+/tmp/nexdwatch-ranker-venv/bin/python \
+  -m experiments.ranker.rrf_calibration \
+  --csv-path data/users_data.csv \
+  --output-path notebooks/data/rrf_calibration/full_pool_v2.json
+```
+
+The ignored JSON report is a compact 172 KiB summary containing aggregate
+validation behavior, test metrics, stability, clustered uncertainty, and
+segments. The measured fixed recommendation remains equal-weight RRF with
+`k=60`; this result is documented in [RESULTS.md](RESULTS.md). It has not been
+wired into public serving.

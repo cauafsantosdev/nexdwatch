@@ -35,6 +35,65 @@ class UserRankingResult:
     graded_ndcg_at_20: float
 
 
+def target_rank(
+    film_ids: NDArray[np.int64],
+    scores: NDArray[np.floating],
+    target_film_id: int,
+) -> int | None:
+    """Return the exact deterministic target rank for one candidate group."""
+    if len(film_ids) != len(scores):
+        raise ValueError("ranking film IDs and scores differ in length")
+    target_positions = np.flatnonzero(film_ids == target_film_id)
+    if not len(target_positions):
+        return None
+    safe_scores = np.nan_to_num(np.asarray(scores, dtype=np.float64), nan=-np.inf)
+    target_score = safe_scores[int(target_positions[0])]
+    return int(
+        1
+        + np.count_nonzero(safe_scores > target_score)
+        + np.count_nonzero((safe_scores == target_score) & (film_ids < target_film_id))
+    )
+
+
+def target_rank_metrics(
+    ranks: list[int | None],
+    *,
+    denominator: int | None = None,
+) -> dict[str, float | int]:
+    """Aggregate canonical-target metrics from already ranked user groups."""
+    users = len(ranks) if denominator is None else denominator
+    if users < len(ranks):
+        raise ValueError("ranking denominator cannot be smaller than rank count")
+    if users <= 0:
+        return {
+            "users": 0,
+            "recall_at_10": 0.0,
+            "recall_at_20": 0.0,
+            "recall_at_50": 0.0,
+            "ndcg_at_10": 0.0,
+            "ndcg_at_20": 0.0,
+            "mrr_at_10": 0.0,
+        }
+    return {
+        "users": users,
+        "recall_at_10": sum(rank is not None and rank <= 10 for rank in ranks) / users,
+        "recall_at_20": sum(rank is not None and rank <= 20 for rank in ranks) / users,
+        "recall_at_50": sum(rank is not None and rank <= 50 for rank in ranks) / users,
+        "ndcg_at_10": sum(
+            1.0 / np.log2(rank + 1) for rank in ranks if rank is not None and rank <= 10
+        )
+        / users,
+        "ndcg_at_20": sum(
+            1.0 / np.log2(rank + 1) for rank in ranks if rank is not None and rank <= 20
+        )
+        / users,
+        "mrr_at_10": sum(
+            1.0 / rank for rank in ranks if rank is not None and rank <= 10
+        )
+        / users,
+    }
+
+
 def evaluate_ranking_scores(
     dataset: PartitionDataset,
     scores: NDArray[np.floating],
@@ -100,9 +159,11 @@ def _per_user_results(
         )
         group_film_ids = dataset.film_ids[start:stop]
         order = np.lexsort((group_film_ids, -group_scores))
-        ordered_ids = group_film_ids[order]
-        target_positions = np.flatnonzero(ordered_ids == query.designated_target_id)
-        rank = int(target_positions[0] + 1) if len(target_positions) else None
+        rank = (
+            target_rank(group_film_ids, group_scores, query.designated_target_id)
+            if query.designated_target_id is not None
+            else None
+        )
         ordered_labels = dataset.labels[start:stop][order]
         results.append(
             UserRankingResult(

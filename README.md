@@ -28,7 +28,7 @@ The system follows a **decoupled architecture pattern**, designed to handle high
 * **Processing:** The pipeline fetches historical data from Postgres using a high-performance sync driver (`psycopg2`), handles duplicate removal, and pivots the data into a sparse matrix.
 * **Modeling:** **Scikit-learn** performs TruncatedSVD factorization to reduce dimensionality.
 * **Artifacts:** Training writes normalized SVD item embeddings, their film-ID mapping, and an exact FAISS retrieval index to the shared data volume.
-* **Candidate Research:** Offline analysis evaluates positive-weighted SVD plus controlled historical popularity for a future pre-ranker. Inductive neural retrieval remains isolated research under `experiments/neural_retrieval/`.
+* **Ranking Research:** Offline analysis finalizes positive-weighted SVD plus controlled historical popularity and retains equal-weight RRF (`k=60`) after a bounded 28-point calibration. Inductive neural retrieval and LightGBM remain isolated research.
 
 ### 3. Online Inference Engine
 
@@ -202,9 +202,13 @@ slots so later ranking and category policy retain useful alternatives. Candidate
 generation is global and personalized retrieval only; it does not create
 category-specific pools.
 
-The ranker, feature construction, category policy, and public hybrid serving are
-not implemented. `GET /users/{user_id}/recommendations` continues to use direct
-SVD mean pooling and the strategy string `SVD_Mean_Pooling`.
+The offline LightGBM benchmark and weighted-RRF calibration live under
+[`experiments/ranker`](experiments/ranker/README.md). Equal-weight RRF with
+`k=60` remains the fixed global-ranking recommendation: it led aggregate
+validation, while unstable fold-specific tuning lost 1.00% global NDCG@20 on
+test. No research ranker, category policy, or hybrid path is wired into serving.
+`GET /users/{user_id}/recommendations` continues to use direct SVD mean pooling
+and the strategy string `SVD_Mean_Pooling`.
 
 ### Candidate-generation evidence
 
