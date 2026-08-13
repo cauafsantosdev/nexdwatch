@@ -27,7 +27,7 @@ from app.policy.profile import (
     build_user_category_profile,
     qualifying_preferences,
 )
-from app.policy.proposals import build_category_proposals
+from app.policy.proposals import _because_you_liked, build_category_proposals
 from app.policy.ranking import rank_candidates_by_rrf
 from app.repositories.interactions import (
     RatedInteraction,
@@ -458,6 +458,53 @@ def test_anchor_v1_1_uses_exact_top_100_inventory_neighborhood() -> None:
     assert proposal.ordered_candidate_ids == tuple(range(2, 102))
     assert proposal.policy_metadata["neighborhood_rule"] == "top_100"
     assert proposal.policy_metadata["usable_neighbor_count"] == 100
+
+
+def test_maximum_rating_anchor_pruning_is_exactly_equivalent_to_full_evaluation() -> (
+    None
+):
+    rng = np.random.default_rng(42)
+    raw_vectors = rng.normal(size=(124, 8)).astype(np.float32)
+    vectors = raw_vectors / np.linalg.norm(raw_vectors, axis=1, keepdims=True)
+    films = [PolicyFilm(film_id, str(film_id), 2000) for film_id in range(1, 125)]
+    ranked = tuple(
+        _ranked(film_id, film_id - 4, svd_rank=film_id - 4) for film_id in range(5, 125)
+    )
+    catalog = _catalog(films)
+    positions = {film_id: film_id - 1 for film_id in range(1, 125)}
+    scenarios = (
+        (5.0, 4.5, 5.0, 4.5),
+        (4.5, 4.5, 4.5, 4.5),
+        (4.0, 4.0, 4.0, 4.0),
+        (5.0, 5.0, 5.0, 5.0),
+    )
+
+    for ratings in scenarios:
+        profile = _profile(
+            anchors=tuple(
+                AnchorPreference(film_id, f"Anchor {film_id}", rating)
+                for film_id, rating in enumerate(ratings, start=1)
+            )
+        )
+        optimized = _because_you_liked(
+            ranked,
+            profile,
+            catalog,
+            vectors,
+            positions,
+            DEFAULT_POLICY_CONFIG,
+        )
+        exhaustive = _because_you_liked(
+            ranked,
+            profile,
+            catalog,
+            vectors,
+            positions,
+            DEFAULT_POLICY_CONFIG,
+            maximum_rating_only=False,
+        )
+
+        assert optimized == exhaustive
 
 
 def test_balanced_category_hard_caps_head_while_filling_with_mid_tail() -> None:

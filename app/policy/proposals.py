@@ -18,6 +18,10 @@ from app.domain.categorized_recommendations import (
 from app.policy.catalog import PolicyCatalog, PolicyFilm
 from app.policy.config import DEFAULT_POLICY_CONFIG, CategoryPolicyConfig
 from app.policy.profile import preference_evidence_tier, qualifying_preferences
+from app.services.category_request_profile import (
+    CategoryRequestProfile,
+    request_stage,
+)
 
 CATEGORY_KEYS = (
     "top_picks",
@@ -47,6 +51,7 @@ def build_category_proposals(
     id_to_position: dict[int, int],
     *,
     config: CategoryPolicyConfig = DEFAULT_POLICY_CONFIG,
+    profiler: CategoryRequestProfile | None = None,
 ) -> ProposalBuildResult:
     """Build all viable V1 category proposals exactly once for one user."""
     candidate_by_id = {candidate.film_id: candidate for candidate in ranked_candidates}
@@ -64,18 +69,21 @@ def build_category_proposals(
         _classic_cinema,
     )
     for builder in builders:
-        proposal = builder(ranked_candidates, profile, catalog, config)
+        with request_stage(profiler, f"proposal_{builder.__name__.lstrip('_')}"):
+            proposal = builder(ranked_candidates, profile, catalog, config)
         if proposal is not None:
             proposals.append(proposal)
 
-    anchor, anchor_diagnostics = _because_you_liked(
-        ranked_candidates,
-        profile,
-        catalog,
-        item_vectors,
-        id_to_position,
-        config,
-    )
+    with request_stage(profiler, "proposal_because_you_liked"):
+        anchor, anchor_diagnostics = _because_you_liked(
+            ranked_candidates,
+            profile,
+            catalog,
+            item_vectors,
+            id_to_position,
+            config,
+            profiler,
+        )
     diagnostics["anchor"] = anchor_diagnostics
     if anchor is not None:
         proposals.append(anchor)
@@ -88,6 +96,8 @@ def build_category_proposals(
     )
     if set(candidate_by_id) != {candidate.film_id for candidate in ranked_candidates}:
         raise RuntimeError("candidate identity changed during category proposal build")
+    if profiler is not None:
+        profiler.count("proposal_count", len(proposals))
     return ProposalBuildResult(tuple(proposals), diagnostics)
 
 
@@ -516,6 +526,9 @@ def _because_you_liked(
     item_vectors: NDArray[np.floating],
     id_to_position: dict[int, int],
     config: CategoryPolicyConfig,
+    profiler: CategoryRequestProfile | None = None,
+    *,
+    maximum_rating_only: bool = True,
 ) -> tuple[CategoryProposal | None, dict[str, Any]]:
     del catalog
     high_anchors = [
@@ -545,16 +558,48 @@ def _because_you_liked(
     valid_anchors = tuple(
         anchor for anchor in anchors if anchor.film_id in id_to_position
     )
+    maximum_rating = max((anchor.rating for anchor in valid_anchors), default=None)
+    competitive_anchors = tuple(
+        anchor for anchor in valid_anchors if anchor.rating == maximum_rating
+    )
+    if maximum_rating_only:
+        evaluation_batches = []
+        for start in range(0, len(valid_anchors), config.anchor_similarity_batch_size):
+            batch = valid_anchors[start : start + config.anchor_similarity_batch_size]
+            if not any(anchor.rating == maximum_rating for anchor in batch):
+                break
+            # Keep the baseline batch shape, including non-competitive padding.
+            # BLAS can accumulate float32 products differently for a differently
+            # shaped matrix, which would change exact diagnostic fingerprints.
+            evaluation_batches.append(batch)
+    else:
+        evaluation_batches = [
+            valid_anchors[start : start + config.anchor_similarity_batch_size]
+            for start in range(
+                0, len(valid_anchors), config.anchor_similarity_batch_size
+            )
+        ]
+    if profiler is not None:
+        profiler.count(
+            "anchor_evaluated_count", sum(len(batch) for batch in evaluation_batches)
+        )
+        profiler.count("anchor_competitive_count", len(competitive_anchors))
+        profiler.count("anchor_candidate_matrix_rows", len(candidate_ids))
+        profiler.count(
+            "anchor_vector_dimensions",
+            int(candidate_matrix.shape[1]) if candidate_matrix.ndim == 2 else 0,
+        )
     neighborhood_size = _anchor_neighborhood_size(config, len(candidate_ids))
     neighborhoods: list[tuple[Any, float, int, float, float]] = []
-    for start in range(0, len(valid_anchors), config.anchor_similarity_batch_size):
-        batch = valid_anchors[start : start + config.anchor_similarity_batch_size]
+    for batch in evaluation_batches:
         anchor_matrix = np.ascontiguousarray(
             item_vectors[[id_to_position[anchor.film_id] for anchor in batch]],
             dtype=np.float32,
         )
         batch_similarities = anchor_matrix @ candidate_matrix.T
         for anchor, similarities in zip(batch, batch_similarities, strict=True):
+            if maximum_rating_only and anchor.rating != maximum_rating:
+                continue
             finite_indices = np.flatnonzero(np.isfinite(similarities))
             usable_indices = (
                 _top_neighbor_indices(

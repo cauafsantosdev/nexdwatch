@@ -33,6 +33,9 @@ CATEGORY_BENCHMARK_REPORT_PATH = (
 CATEGORY_QUALITATIVE_REPORT_PATH = (
     DATA_DIR / "analysis" / "category_policy_qualitative.json"
 )
+CATEGORY_SERVING_PROFILE_PATH = (
+    DATA_DIR / "analysis" / "category_serving_performance.json"
+)
 
 
 @app.command()
@@ -406,6 +409,49 @@ def preview_category_refinement(
     typer.echo(
         "Qualitative previews complete: "
         f"users={len(report['user_ids'])} versions=v1,v1_1"
+    )
+    typer.echo(f"Report: {report_path}")
+
+
+@app.command("profile-category-serving")
+def profile_category_serving(
+    user_ids: str = typer.Option(
+        "3318,3569,3155,2825,3953,2504,2474,2994,3724",
+        help="Comma-separated representative persisted user IDs.",
+    ),
+    repetitions: Annotated[
+        int, typer.Option(min=1, max=10, help="Latency and stage passes per user.")
+    ] = 3,
+    rss_requests: Annotated[
+        int, typer.Option(min=0, max=500, help="Rotating long-run RSS requests.")
+    ] = 100,
+    report_path: Annotated[
+        Path, typer.Option(help="Ignored internal serving-profile report path.")
+    ] = CATEGORY_SERVING_PROFILE_PATH,
+) -> None:
+    """Profile loaded category serving without changing recommendation output."""
+    from experiments.category_policy.serving_performance import (
+        run_serving_performance_profile,
+    )
+
+    try:
+        parsed_user_ids = tuple(int(value.strip()) for value in user_ids.split(","))
+        report = run_serving_performance_profile(
+            user_ids=parsed_user_ids,
+            repetitions=repetitions,
+            rss_requests=rss_requests,
+            output_path=report_path,
+        )
+    except (TypeError, ValueError) as exc:
+        typer.echo(f"Invalid serving-profile arguments: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        typer.echo(f"Category serving profile failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    latency = report["latency_ms"]
+    typer.echo(
+        f"requests={latency['count']} mean_ms={latency['mean']:.2f} "
+        f"median_ms={latency['median']:.2f} p95_ms={latency['p95']:.2f}"
     )
     typer.echo(f"Report: {report_path}")
 

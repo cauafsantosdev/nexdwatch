@@ -11,6 +11,10 @@ from app.policy.allocation import allocate_categories
 from app.policy.catalog import PolicyCatalog
 from app.policy.config import DEFAULT_POLICY_CONFIG, CategoryPolicyConfig
 from app.policy.proposals import build_category_proposals
+from app.services.category_request_profile import (
+    CategoryRequestProfile,
+    request_stage,
+)
 
 
 class CategorizedPolicyEngine:
@@ -33,6 +37,8 @@ class CategorizedPolicyEngine:
         self,
         ranked_candidates: tuple[RankedCandidate, ...],
         profile: UserCategoryProfile,
+        *,
+        profiler: CategoryRequestProfile | None = None,
     ) -> CategoryPolicyResult:
         proposals = build_category_proposals(
             ranked_candidates,
@@ -41,22 +47,27 @@ class CategorizedPolicyEngine:
             self._item_vectors,
             self._id_to_position,
             config=self._config,
+            profiler=profiler,
         )
-        allocated, allocation_diagnostics = allocate_categories(
-            proposals.proposals,
-            profile,
-            self._catalog,
-            config=self._config,
-        )
+        with request_stage(profiler, "category_allocation"):
+            allocated, allocation_diagnostics = allocate_categories(
+                proposals.proposals,
+                profile,
+                self._catalog,
+                config=self._config,
+            )
         diagnostics = {
             **proposals.diagnostics,
             "allocation": allocation_diagnostics,
             "history_depth_band": profile.history_depth_band,
         }
-        return CategoryPolicyResult(
+        result = CategoryPolicyResult(
             user_id=profile.user_id,
             ranked_candidates=ranked_candidates,
             proposals=proposals.proposals,
             allocated_categories=allocated,
             diagnostics=diagnostics,
         )
+        if profiler is not None:
+            profiler.count("category_count", len(allocated))
+        return result

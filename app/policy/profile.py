@@ -12,6 +12,10 @@ from app.domain.categorized_recommendations import (
 from app.policy.catalog import PolicyCatalog, PolicyEntity
 from app.policy.config import DEFAULT_POLICY_CONFIG, CategoryPolicyConfig
 from app.repositories.interactions import RecommendationHistory
+from app.services.category_request_profile import (
+    CategoryRequestProfile,
+    request_stage,
+)
 
 
 @dataclass(slots=True)
@@ -26,24 +30,27 @@ def build_user_category_profile(
     catalog: PolicyCatalog,
     *,
     config: CategoryPolicyConfig = DEFAULT_POLICY_CONFIG,
+    profiler: CategoryRequestProfile | None = None,
 ) -> UserCategoryProfile:
     """Build one leakage-free profile from explicit ratings and watched count."""
-    rated = tuple(
-        interaction
-        for interaction in history.rated_interactions
-        if interaction.film_id in catalog.films
-    )
-    ratings = [interaction.rating for interaction in rated]
-    user_mean = fmean(ratings) if ratings else None
+    with request_stage(profiler, "profile_rating_aggregation"):
+        rated = tuple(
+            interaction
+            for interaction in history.rated_interactions
+            if interaction.film_id in catalog.films
+        )
+        ratings = [interaction.rating for interaction in rated]
+        user_mean = fmean(ratings) if ratings else None
     preferences: dict[EntityFamily, tuple[EntityPreferenceRecord, ...]] = {}
     for family in ("director", "genre", "decade", "country", "language"):
-        preferences[family] = _family_preferences(
-            family,
-            rated,
-            user_mean,
-            catalog,
-            config,
-        )
+        with request_stage(profiler, f"profile_{family}_preferences"):
+            preferences[family] = _family_preferences(
+                family,
+                rated,
+                user_mean,
+                catalog,
+                config,
+            )
 
     anchors = tuple(
         sorted(
@@ -73,7 +80,7 @@ def build_user_category_profile(
         history_band = "deep"
     else:
         history_band = "established"
-    return UserCategoryProfile(
+    profile = UserCategoryProfile(
         user_id=user_id,
         watched_count=watched_count,
         rated_count=len(rated),
@@ -86,6 +93,17 @@ def build_user_category_profile(
         preferences=preferences,
         history_depth_band=history_band,
     )
+    if profiler is not None:
+        profiler.count("profile_rated_count", len(rated))
+        profiler.count("eligible_anchor_count", len(anchors))
+        profiler.count(
+            "maximum_rating_anchor_count",
+            sum(anchor.rating == anchors[0].rating for anchor in anchors)
+            if anchors
+            else 0,
+        )
+        profiler.count("maximum_anchor_rating", anchors[0].rating if anchors else None)
+    return profile
 
 
 def _family_preferences(
