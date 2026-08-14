@@ -67,6 +67,12 @@ class RecommendationService:
         self._artifacts = None
         return False
 
+    def configure_artifact_root(self, artifact_root: str | Path) -> None:
+        """Select one startup bundle before immutable resources are loaded."""
+        if self._artifacts is not None:
+            raise RuntimeError("cannot reconfigure loaded recommendation artifacts")
+        self._artifact_root = Path(artifact_root)
+
     def unload_artifacts(self) -> None:
         """Release loaded recommendation artifacts."""
         self._artifacts = None

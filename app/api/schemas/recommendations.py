@@ -10,6 +10,7 @@ class HealthResponse(BaseModel):
 
     health: Literal["check"]
     model_status: Literal["loaded", "missing"]
+    model_version: str | None = None
 
 
 class RecommendationItem(BaseModel):

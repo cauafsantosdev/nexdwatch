@@ -42,6 +42,7 @@ class CandidateGenerationService:
         session_factory: async_sessionmaker[AsyncSession] = SessionLocal,
         artifact_root: str | Path | None = None,
         *,
+        popularity_path: str | Path | None = None,
         svd_depth: int = FINAL_WEIGHTED_SVD_DEPTH,
         popularity_depth: int = FINAL_POPULARITY_DEPTH,
     ) -> None:
@@ -50,6 +51,9 @@ class CandidateGenerationService:
         settings = get_settings()
         self._session_factory = session_factory
         self._artifact_root = Path(artifact_root or settings.ARTIFACT_ROOT)
+        self._popularity_path = Path(
+            popularity_path or self._artifact_root / DEFAULT_POPULARITY_ARTIFACT
+        )
         self._svd_depth = svd_depth
         self._popularity_depth = popularity_depth
         self._svd_artifacts: SVDArtifacts | None = None
@@ -63,9 +67,7 @@ class CandidateGenerationService:
         """Load both candidate sources once and validate their catalog parity."""
         try:
             svd = load_svd_artifacts(self._artifact_root)
-            popularity = read_popularity_artifact(
-                self._artifact_root / DEFAULT_POPULARITY_ARTIFACT
-            )
+            popularity = read_popularity_artifact(self._popularity_path)
             svd_ids = set(svd.film_index)
             popularity_ids = {entry.film_id for entry in popularity.films}
             if not popularity_ids.issubset(svd_ids):

@@ -9,6 +9,7 @@ from unittest.mock import Mock
 import pytest
 from celery.exceptions import Retry
 
+from app.core.config import get_settings
 from app.domain.task_state import TaskMetadata, TaskResult, TaskStatus
 from app.scraper.user_scraping import (
     ProfileScrapeError,
@@ -252,7 +253,9 @@ def test_celery_task_uses_durable_json_configuration() -> None:
     assert celery_app.conf.task_acks_late is True
     assert celery_app.conf.task_reject_on_worker_lost is True
     assert celery_app.conf.broker_connection_retry_on_startup is True
-    assert celery_app.conf.broker_transport_options["visibility_timeout"] == 900
+    assert celery_app.conf.broker_transport_options["visibility_timeout"] == (
+        get_settings().CELERY_BROKER_VISIBILITY_TIMEOUT_SECONDS
+    )
     assert profile_sync_task.queue == PROFILE_SYNC_QUEUE
     assert profile_sync_task.ignore_result is True
     assert profile_sync_task.max_retries == 2

@@ -4,7 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: nexdwatch-api
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     volumes:
@@ -19,6 +20,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    restart: unless-stopped
     command: >
       celery -A app.workers.celery_app.celery_app worker
       --loglevel=INFO --queues=profile_sync --concurrency=1
@@ -32,8 +34,43 @@ services:
       redis:
         condition: service_healthy
 
+  maintenance_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: >
+      celery -A app.workers.celery_app.celery_app worker
+      --loglevel=INFO --queues=maintenance --concurrency=1
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    command: >
+      celery -A app.workers.celery_app.celery_app beat --loglevel=INFO
+      --schedule=/tmp/celerybeat-schedule
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+
   redis:
     image: redis:8.8.1-alpine
+    restart: unless-stopped
     command:
       - redis-server
       - --appendonly

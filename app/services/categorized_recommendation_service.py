@@ -68,6 +68,18 @@ class CategorizedRecommendationService:
         """Load frozen candidate artifacts separately for resource measurement."""
         return self._candidate_service.load_artifacts()
 
+    def configure_artifacts(
+        self, artifact_root: str | Path, popularity_path: str | Path
+    ) -> None:
+        """Bind candidate resources to the same resolved startup bundle."""
+        if self.is_loaded:
+            raise RuntimeError("cannot reconfigure loaded categorized resources")
+        self._candidate_service = CandidateGenerationService(
+            self._session_factory,
+            artifact_root,
+            popularity_path=popularity_path,
+        )
+
     async def load_policy_catalog(self) -> bool:
         """Load and intern the bounded policy metadata snapshot."""
         svd = self._candidate_service.svd_artifacts

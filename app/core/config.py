@@ -41,7 +41,12 @@ class Settings(BaseSettings):
     TASK_RESULT_TTL_SECONDS: int = 86_400
     PROFILE_SYNC_SOFT_TIME_LIMIT_SECONDS: int = 300
     PROFILE_SYNC_HARD_TIME_LIMIT_SECONDS: int = 330
-    CELERY_BROKER_VISIBILITY_TIMEOUT_SECONDS: int = 900
+    CELERY_BROKER_VISIBILITY_TIMEOUT_SECONDS: int = 21_600
+    MAINTENANCE_REDIS_URL: str = "redis://redis:6379/2"
+    MAINTENANCE_LOCK_TTL_SECONDS: int = 21_600
+    MAINTENANCE_SOFT_TIME_LIMIT_SECONDS: int = 18_000
+    MAINTENANCE_HARD_TIME_LIMIT_SECONDS: int = 21_000
+    FILM_QUEUE_BATCH_SIZE: int = Field(default=100, ge=1, le=1_000)
 
     ARTIFACT_ROOT: Path = Path("data")
     MODEL_VERSION: str = "svd-current"
@@ -52,6 +57,12 @@ class Settings(BaseSettings):
     RETRIEVAL_TOP_K: int = 500
     MIN_PROFILE_FILMS: int = 5
 
+    NEW_ELIGIBLE_USERS_THRESHOLD: int = Field(default=100, ge=1)
+    NEW_MODEL_FILMS_THRESHOLD: int = Field(default=250, ge=1)
+    MAX_MODEL_AGE_DAYS: int = Field(default=180, ge=1)
+    MODEL_RETENTION_PREVIOUS: int = Field(default=2, ge=1)
+    MODEL_POINTER_CHECK_INTERVAL_SECONDS: float = Field(default=30.0, ge=5.0)
+
     @model_validator(mode="after")
     def validate_task_timeouts(self) -> "Settings":
         """Keep locks and broker visibility longer than hard task execution."""
@@ -60,13 +71,18 @@ class Settings(BaseSettings):
             <= self.PROFILE_SYNC_HARD_TIME_LIMIT_SECONDS
         ):
             raise ValueError("profile sync active TTL must exceed the hard time limit")
-        if (
-            self.CELERY_BROKER_VISIBILITY_TIMEOUT_SECONDS
-            <= self.PROFILE_SYNC_HARD_TIME_LIMIT_SECONDS
+        if self.CELERY_BROKER_VISIBILITY_TIMEOUT_SECONDS <= max(
+            self.PROFILE_SYNC_HARD_TIME_LIMIT_SECONDS,
+            self.MAINTENANCE_HARD_TIME_LIMIT_SECONDS,
         ):
             raise ValueError(
-                "broker visibility timeout must exceed the hard time limit"
+                "broker visibility timeout must exceed every hard time limit"
             )
+        if (
+            self.MAINTENANCE_LOCK_TTL_SECONDS
+            <= self.MAINTENANCE_HARD_TIME_LIMIT_SECONDS
+        ):
+            raise ValueError("maintenance lock TTL must exceed the hard time limit")
         return self
 
 

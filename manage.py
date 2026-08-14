@@ -537,5 +537,279 @@ def _format_mean_std(summary: Mapping[str, float]) -> str:
     return f"{summary['mean']:.6f}±{summary['population_std']:.6f}"
 
 
+@app.command("process-film-queue")
+def process_film_queue_command(
+    batch_size: Annotated[int | None, typer.Option(min=1, max=1_000)] = None,
+    dry_run: Annotated[
+        bool, typer.Option(help="Inspect the bounded batch only.")
+    ] = False,
+) -> None:
+    """Run one bounded film-ingestion batch using the established processor."""
+    from dataclasses import asdict
+
+    from app.core.config import get_settings
+    from app.db.loaders.sync_queue import _get_pending_slugs, sync_film_queue
+
+    selected_batch_size = batch_size or get_settings().FILM_QUEUE_BATCH_SIZE
+    try:
+        if dry_run:
+            from app.core.database import SessionLocal
+
+            slugs = asyncio.run(
+                _get_pending_slugs(SessionLocal, batch_size=selected_batch_size)
+            )
+            typer.echo(
+                f"dry_run=true selected={len(slugs)} batch_size={selected_batch_size}"
+            )
+            return
+        from app.infrastructure.maintenance_lock import MaintenanceLock
+
+        settings = get_settings()
+        lock = MaintenanceLock(
+            settings.MAINTENANCE_REDIS_URL,
+            key="film-queue",
+            ttl_seconds=settings.MAINTENANCE_LOCK_TTL_SECONDS,
+        )
+        try:
+            with lock.held() as acquired:
+                if not acquired:
+                    raise RuntimeError("film queue maintenance is already active")
+                result = asyncio.run(sync_film_queue(batch_size=selected_batch_size))
+        finally:
+            lock.close()
+    except Exception as exc:
+        typer.echo(f"Film queue processing failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(json.dumps(asdict(result), default=str, sort_keys=True))
+
+
+@app.command("refresh-catalog")
+def refresh_catalog_command(
+    execution_date: Annotated[
+        str | None,
+        typer.Option(help="UTC policy date in YYYY-MM-DD form; defaults to today."),
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option(help="Select films without scraping/writes.")
+    ] = False,
+) -> None:
+    """Refresh recent-film aggregate fields under the January/July policy."""
+    from dataclasses import asdict
+    from datetime import UTC, date, datetime
+
+    from app.services.catalog_maintenance import refresh_recent_catalog
+
+    try:
+        selected_date = (
+            date.fromisoformat(execution_date)
+            if execution_date
+            else datetime.now(UTC).date()
+        )
+        if dry_run:
+            result = asyncio.run(refresh_recent_catalog(selected_date, dry_run=True))
+        else:
+            from app.core.config import get_settings
+            from app.infrastructure.maintenance_lock import MaintenanceLock
+
+            settings = get_settings()
+            lock = MaintenanceLock(
+                settings.MAINTENANCE_REDIS_URL,
+                key=f"catalog-refresh:{selected_date.year}-{selected_date.month:02d}",
+                ttl_seconds=settings.MAINTENANCE_LOCK_TTL_SECONDS,
+            )
+            try:
+                with lock.held() as acquired:
+                    if not acquired:
+                        raise RuntimeError("catalog refresh is already active")
+                    result = asyncio.run(refresh_recent_catalog(selected_date))
+            finally:
+                lock.close()
+    except Exception as exc:
+        typer.echo(f"Catalog refresh failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(json.dumps(asdict(result), default=str, sort_keys=True))
+
+
+def _decision_payload(decision: Any) -> dict[str, Any]:
+    trained = decision.trained_stats
+    return {
+        "current_model": None,
+        "trained_at": trained.trained_at.isoformat() if trained else None,
+        "current_eligible_users": decision.current_stats.eligible_user_count,
+        "trained_eligible_users": (
+            trained.eligible_user_count
+            if trained and trained.eligible_user_count >= 0
+            else None
+        ),
+        "delta_users": decision.deltas.eligible_users,
+        "current_rated_film_count": decision.current_stats.model_film_count,
+        "new_model_film_delta": decision.deltas.new_model_films,
+        "current_rated_interactions": decision.current_stats.rated_interaction_count,
+        "model_age_days": decision.deltas.model_age_days,
+        "should_retrain": decision.should_retrain,
+        "reasons": [reason.value for reason in decision.reasons],
+    }
+
+
+@app.command("training-status")
+def training_status_command() -> None:
+    """Inspect precise retraining statistics and threshold decisions without writes."""
+    from app.core.config import get_settings
+    from app.ml.model_lifecycle import evaluate_retraining
+    from app.ml.model_registry import read_current_version
+
+    try:
+        settings = get_settings()
+        decision = evaluate_retraining(settings=settings)
+        payload = _decision_payload(decision)
+        payload["current_model"] = (
+            read_current_version(settings.ARTIFACT_ROOT) or "legacy-flat"
+        )
+        payload["thresholds"] = {
+            "new_eligible_users": settings.NEW_ELIGIBLE_USERS_THRESHOLD,
+            "new_model_films": settings.NEW_MODEL_FILMS_THRESHOLD,
+            "max_model_age_days": settings.MAX_MODEL_AGE_DAYS,
+        }
+    except Exception as exc:
+        typer.echo(f"Training status failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+
+
+@app.command("retrain")
+def retrain_command(
+    force: Annotated[bool, typer.Option(help="Bypass operational thresholds.")] = False,
+    dry_run: Annotated[
+        bool, typer.Option(help="Evaluate without building/promoting.")
+    ] = False,
+) -> None:
+    """Run the validated build-to-atomic-promotion production lifecycle."""
+    from app.ml.model_lifecycle import evaluate_retraining, retrain_and_promote
+
+    try:
+        if dry_run:
+            typer.echo(
+                json.dumps(
+                    _decision_payload(evaluate_retraining(force=force)), indent=2
+                )
+            )
+            return
+        from app.core.config import get_settings
+        from app.infrastructure.maintenance_lock import MaintenanceLock
+
+        settings = get_settings()
+        lock = MaintenanceLock(
+            settings.MAINTENANCE_REDIS_URL,
+            key="retraining",
+            ttl_seconds=settings.MAINTENANCE_LOCK_TTL_SECONDS,
+        )
+        try:
+            with lock.held() as acquired:
+                if not acquired:
+                    raise RuntimeError("retraining is already active")
+                result = retrain_and_promote(force=force)
+        finally:
+            lock.close()
+    except Exception as exc:
+        typer.echo(f"Retraining failed; current model unchanged: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    if result.promotion is None:
+        typer.echo("Retraining not required.")
+        raise typer.Exit(code=0)
+    typer.echo(f"Promoted {result.promotion.model_version}; API activation pending")
+
+
+@app.command("validate-model")
+def validate_model_command(
+    model_version: Annotated[
+        str | None, typer.Option(help="Version; defaults to current.")
+    ] = None,
+) -> None:
+    """Fully validate a versioned model bundle."""
+    from app.core.config import get_settings
+    from app.ml.model_registry import (
+        model_root,
+        read_current_version,
+        validate_model_bundle,
+    )
+
+    settings = get_settings()
+    selected = model_version or read_current_version(settings.ARTIFACT_ROOT)
+    if selected is None:
+        typer.echo("No versioned current model is configured.", err=True)
+        raise typer.Exit(code=1)
+    try:
+        bundle = validate_model_bundle(model_root(settings.ARTIFACT_ROOT) / selected)
+    except Exception as exc:
+        typer.echo(f"Model validation failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        f"valid=true version={bundle.manifest.model_version} films={bundle.manifest.film_count}"
+    )
+
+
+@app.command("list-models")
+def list_models_command() -> None:
+    """List complete valid bundles newest first."""
+    from app.core.config import get_settings
+    from app.ml.model_registry import list_valid_model_bundles, read_current_version
+
+    settings = get_settings()
+    current = read_current_version(settings.ARTIFACT_ROOT)
+    for manifest in list_valid_model_bundles(settings.ARTIFACT_ROOT):
+        marker = "current" if manifest.model_version == current else "available"
+        typer.echo(
+            f"{manifest.model_version} {marker} trained_at={manifest.trained_at} "
+            f"films={manifest.film_count} users={manifest.eligible_user_count}"
+        )
+
+
+@app.command("current-model")
+def current_model_command() -> None:
+    """Report the authoritative model pointer without exposing filesystem paths."""
+    from app.core.config import get_settings
+    from app.ml.model_registry import read_current_version
+
+    current = read_current_version(get_settings().ARTIFACT_ROOT)
+    typer.echo(current or "legacy-flat")
+
+
+@app.command("rollback-model")
+def rollback_model_command(
+    dry_run: Annotated[bool, typer.Option(help="Report rollback target only.")] = False,
+) -> None:
+    """Validate and atomically promote the immediately previous valid bundle."""
+    from app.core.config import get_settings
+    from app.ml.model_registry import (
+        rollback_model,
+        select_rollback_target,
+    )
+
+    settings = get_settings()
+    try:
+        if dry_run:
+            target = select_rollback_target(settings.ARTIFACT_ROOT)
+            typer.echo(f"rollback_target={target.model_version} dry_run=true")
+            return
+        from app.infrastructure.maintenance_lock import MaintenanceLock
+
+        lock = MaintenanceLock(
+            settings.MAINTENANCE_REDIS_URL,
+            key="retraining",
+            ttl_seconds=settings.MAINTENANCE_LOCK_TTL_SECONDS,
+        )
+        try:
+            with lock.held() as acquired:
+                if not acquired:
+                    raise RuntimeError("model promotion is already active")
+                result = rollback_model(settings.ARTIFACT_ROOT)
+        finally:
+            lock.close()
+    except Exception as exc:
+        typer.echo(f"Rollback failed; current model unchanged: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Rolled back to {result.model_version}; API activation pending")
+
+
 if __name__ == "__main__":
     app()

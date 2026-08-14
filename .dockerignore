@@ -1,0 +1,15 @@
+.git
+.venv
+.pytest_cache
+.ruff_cache
+__pycache__
+*.py[cod]
+data/*
+!data/item_embeddings.npy
+!data/film_index.json
+!data/retrieval.faiss
+!data/candidates/
+data/candidates/*
+!data/candidates/popularity.json
+notebooks
+tests

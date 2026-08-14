@@ -4,8 +4,10 @@ import asyncio
 
 import pytest
 from fastapi import FastAPI
+from starlette.requests import Request
 
 from app import main as main_module
+from app.api.routes.health import health
 
 
 class _OldRecommendationService:
@@ -62,6 +64,7 @@ def test_lifespan_loads_once_reuses_state_and_unloads_on_shutdown(monkeypatch) -
     async def exercise() -> None:
         async with main_module.lifespan(application):
             assert application.state.categorized_recommendation_service is categorized
+            assert application.state.model_version == "legacy-flat"
             assert categorized.load_calls == 1
             assert old.load_calls == 1
 
@@ -90,3 +93,16 @@ def test_failed_categorized_load_aborts_startup_and_cleans_up(monkeypatch) -> No
     assert categorized.unload_calls == 1
     assert old.unload_calls == 1
     assert tasks.close_calls == 1
+
+
+def test_health_reports_currently_loaded_model_version() -> None:
+    application = FastAPI()
+    application.state.model_version = "20300102T010203Z-00000002"
+    request = Request({"type": "http", "app": application})
+    service = _OldRecommendationService()
+    service.is_model_loaded = True
+
+    response = asyncio.run(health(request, service))
+
+    assert response.model_status == "loaded"
+    assert response.model_version == "20300102T010203Z-00000002"

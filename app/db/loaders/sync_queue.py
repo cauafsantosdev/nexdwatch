@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from typing import Any
@@ -10,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.database import SessionLocal
+from app.domain.maintenance import FilmQueueRunResult
 from app.models import (
     Actor,
     Country,
@@ -56,10 +58,14 @@ def _relation_names(value: Any) -> set[str]:
 
 async def _get_pending_slugs(
     session_factory: async_sessionmaker[AsyncSession],
+    batch_size: int = 100,
 ) -> list[str]:
     async with session_factory() as session:
         queue_result = await session.execute(
-            select(FilmQueue.film_slug).where(FilmQueue.status == Status.PENDING)
+            select(FilmQueue.film_slug)
+            .where(FilmQueue.status == Status.PENDING)
+            .order_by(FilmQueue.created_at, FilmQueue.id)
+            .limit(batch_size)
         )
         return list(queue_result.scalars().all())
 
@@ -86,7 +92,7 @@ async def _mark_terminal(
     if status not in {Status.FILTERED, Status.FAILED}:
         raise ValueError(f"status is not terminal: {status}")
 
-    async with session_factory() as session:
+    async with session_factory() as session:  # noqa: SIM117
         async with session.begin():
             queue_item = await session.scalar(
                 select(FilmQueue).where(FilmQueue.film_slug == slug)
@@ -154,7 +160,7 @@ async def _persist_success(
     if metadata is None:
         raise ValueError("successful scrape result has no metadata")
 
-    async with session_factory() as session:
+    async with session_factory() as session:  # noqa: SIM117
         async with session.begin():
             queue_item = await session.scalar(
                 select(FilmQueue).where(FilmQueue.film_slug == result.slug)
@@ -215,31 +221,34 @@ async def sync_film_queue(
     *,
     session_factory: async_sessionmaker[AsyncSession] = SessionLocal,
     scraper: Callable[[list[str]], list[FilmScrapeResult]] = scrape_film_queue,
-) -> None:
+    batch_size: int = 100,
+) -> FilmQueueRunResult:
     """Process each pending queue item in an isolated transaction.
 
     Args:
         session_factory: Async database session factory.
         scraper: Blocking batch film scraper.
     """
-    film_slugs = await _get_pending_slugs(session_factory)
+    if batch_size <= 0:
+        raise ValueError("film queue batch size must be positive")
+    started = time.perf_counter()
+    film_slugs = await _get_pending_slugs(session_factory, batch_size=batch_size)
+    pending_count = len(film_slugs)
     if not film_slugs:
-        return
+        return FilmQueueRunResult(0, 0, 0, 0, 0, time.perf_counter() - started)
 
     try:
         scrape_results = await asyncio.to_thread(scraper, film_slugs)
-    except Exception as exc:
+    except Exception:
         logger.exception("Film queue scrape batch failed")
-        scrape_results = [
-            FilmScrapeResult(
-                slug=slug,
-                outcome=FilmScrapeOutcome.FAILED,
-                error=f"Scrape batch failed: {type(exc).__name__}",
-            )
-            for slug in film_slugs
-        ]
+        # Leave every selected row pending so the maintenance task can retry the
+        # transient batch failure without turning the whole batch terminal.
+        raise
 
     results_by_slug = {result.slug: result for result in scrape_results}
+    success_count = 0
+    filtered_count = 0
+    failed_count = 0
     for slug in film_slugs:
         result = results_by_slug.get(slug)
         if result is None:
@@ -249,16 +258,20 @@ async def sync_film_queue(
                 Status.FAILED,
                 "Scraper returned no result",
             )
+            failed_count += 1
             continue
         if result.outcome == FilmScrapeOutcome.FILTERED:
             await _mark_terminal(session_factory, slug, Status.FILTERED, result.error)
+            filtered_count += 1
             continue
         if result.outcome == FilmScrapeOutcome.FAILED:
             await _mark_terminal(session_factory, slug, Status.FAILED, result.error)
+            failed_count += 1
             continue
 
         try:
             await _persist_success(session_factory, result)
+            success_count += 1
         except Exception as exc:
             logger.exception("Film persistence failed for film_slug=%s", slug)
             await _mark_terminal(
@@ -267,6 +280,27 @@ async def sync_film_queue(
                 Status.FAILED,
                 f"Persistence failed: {type(exc).__name__}",
             )
+            failed_count += 1
+
+    result = FilmQueueRunResult(
+        pending_count=pending_count,
+        processed_count=len(film_slugs),
+        success_count=success_count,
+        filtered_count=filtered_count,
+        failed_count=failed_count,
+        duration_seconds=time.perf_counter() - started,
+    )
+    logger.info(
+        "Film queue maintenance pending=%d processed=%d success=%d filtered=%d "
+        "failed=%d duration_s=%.3f",
+        result.pending_count,
+        result.processed_count,
+        result.success_count,
+        result.filtered_count,
+        result.failed_count,
+        result.duration_seconds,
+    )
+    return result
 
 
 if __name__ == "__main__":

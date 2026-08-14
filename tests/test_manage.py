@@ -1,13 +1,66 @@
 """Tests for recommendation artifact CLI commands."""
 
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from typer.testing import CliRunner
 
 import manage
 from app.domain.candidates import CandidateGenerationResult, RecommendationCandidate
+from app.domain.maintenance import (
+    RetrainingDecision,
+    RetrainingDeltas,
+    RetrainingReason,
+    TrainingStatistics,
+)
 from app.ml.faiss_index import FaissIndexBuildResult
+
+
+def test_rollback_dry_run_uses_shared_exact_target_selector(
+    monkeypatch,
+) -> None:
+    from app.ml import model_registry
+
+    target = SimpleNamespace(model_version="20300103T010203Z-00000003")
+    selector = Mock(return_value=target)
+    monkeypatch.setattr(model_registry, "select_rollback_target", selector)
+
+    result = CliRunner().invoke(manage.app, ["rollback-model", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert result.output.strip() == (
+        "rollback_target=20300103T010203Z-00000003 dry_run=true"
+    )
+    selector.assert_called_once()
+
+
+def test_training_status_and_retrain_dry_run_report_legacy_bootstrap(
+    monkeypatch,
+) -> None:
+    from app.ml import model_lifecycle, model_registry
+
+    stats = TrainingStatistics(datetime.now(UTC), 10, 20, (1, 2))
+    decision = RetrainingDecision(
+        should_retrain=True,
+        reasons=(RetrainingReason.LEGACY_MODEL_BOOTSTRAP,),
+        current_stats=stats,
+        trained_stats=None,
+        deltas=RetrainingDeltas(0, 0, 0, 0.0),
+    )
+    evaluator = Mock(return_value=decision)
+    monkeypatch.setattr(model_lifecycle, "evaluate_retraining", evaluator)
+    monkeypatch.setattr(model_registry, "read_current_version", lambda _: None)
+
+    status = CliRunner().invoke(manage.app, ["training-status"])
+    dry_run = CliRunner().invoke(manage.app, ["retrain", "--dry-run"])
+
+    assert status.exit_code == 0
+    assert dry_run.exit_code == 0
+    assert "LEGACY_MODEL_BOOTSTRAP" in status.output
+    assert "LEGACY_MODEL_BOOTSTRAP" in dry_run.output
+    assert evaluator.call_count == 2
 
 
 def test_build_index_command_reports_artifact_details(monkeypatch, tmp_path) -> None:

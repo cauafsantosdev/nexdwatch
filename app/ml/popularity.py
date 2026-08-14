@@ -16,6 +16,10 @@ from app.ml.ratings import rating_to_bucket
 POPULARITY_ARTIFACT_SCHEMA = 1
 POPULARITY_RATING_THRESHOLD = 3.5
 POPULARITY_SOURCE = "resolved positive interactions from controlled data/users_data.csv"
+PRODUCTION_POPULARITY_SOURCE = (
+    "current PostgreSQL rated interactions prepared for production SVD training"
+)
+VALID_POPULARITY_SOURCES = frozenset({POPULARITY_SOURCE, PRODUCTION_POPULARITY_SOURCE})
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +87,7 @@ def validate_popularity_artifact(
         raise ValueError("unsupported popularity artifact schema")
     if artifact.rating_threshold != POPULARITY_RATING_THRESHOLD:
         raise ValueError("unexpected popularity rating threshold")
-    if artifact.source_description != POPULARITY_SOURCE:
+    if artifact.source_description not in VALID_POPULARITY_SOURCES:
         raise ValueError("unexpected popularity source description")
     if artifact.film_count <= 0 or artifact.film_count != len(artifact.films):
         raise ValueError("popularity artifact film count is invalid")
