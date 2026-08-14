@@ -3,7 +3,13 @@
 from .imports import LetterboxdImportResponse, UnresolvedImportFilm
 from .recommendations import (
     HealthResponse,
+    RecommendationAnchorResponse,
+    RecommendationCategoryResponse,
+    RecommendationEntityResponse,
+    RecommendationFeedItemResponse,
+    RecommendationFeedResponse,
     RecommendationItem,
+    RecommendationReasonResponse,
     RecommendationResponse,
 )
 from .tasks import (
@@ -16,7 +22,13 @@ from .tasks import (
 __all__ = [
     "HealthResponse",
     "LetterboxdImportResponse",
+    "RecommendationAnchorResponse",
+    "RecommendationCategoryResponse",
+    "RecommendationEntityResponse",
+    "RecommendationFeedItemResponse",
+    "RecommendationFeedResponse",
     "RecommendationItem",
+    "RecommendationReasonResponse",
     "RecommendationResponse",
     "TaskErrorResponse",
     "TaskResultResponse",

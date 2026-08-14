@@ -108,7 +108,9 @@ def test_repeated_recommendations_are_exact_and_use_one_request_query(
     service, session_factory, _ = _loaded_service()
     history_read = AsyncMock(return_value=RecommendationHistory((), ()))
     monkeypatch.setattr(
-        InteractionRepository, "get_recommendation_history", history_read
+        InteractionRepository,
+        "get_existing_user_recommendation_history",
+        history_read,
     )
 
     first = asyncio.run(service.recommend(7))

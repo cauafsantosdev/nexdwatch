@@ -32,9 +32,9 @@ The system follows a **decoupled architecture pattern**, designed to handle high
 
 ### 3. Online Inference Engine
 
-* **Startup Strategy:** During the application's `lifespan` startup event, the API loads the lightweight model artifacts directly into **RAM**.
-* **Real-Time Computation:** The live `SVD_Mean_Pooling` service mean-pools SVD vectors and uses exact FAISS `IndexFlatIP` retrieval.
-* **Result:** This "In-Memory" approach eliminates disk I/O latency, delivering recommendations in **milliseconds**.
+* **Startup Strategy:** During the application's `lifespan` startup event, each API worker loads the legacy recommendation artifacts and the categorized feed's immutable candidate and policy resources directly into **RAM**.
+* **Real-Time Computation:** The backward-compatible `SVD_Mean_Pooling` endpoint remains available. The product feed uses the finalized 2,000 weighted-SVD + 2,000 controlled-popularity candidate union, equal-weight RRF (`k=60`), and category policy V1.1.
+* **Result:** Both services compute recommendations from loaded resources; the categorized feed only reads current user history during a request.
 
 ---
 
@@ -167,9 +167,22 @@ Use the returned ID to generate recommendations. The engine calculates the user 
 * `GET /users/5/recommendations`
 * *Returns:* A JSON list of movies ranked by collaborative similarity.
 
+The categorized product surface is also available without URL API versioning:
+
+* `GET /recommendations/5/feed`
+* *Returns:* only active category rows in policy order. Each category contains
+  `key`, `title`, `experimental`, and product-safe film items with structured
+  reasons. `outside_usual` is explicitly marked experimental.
+* *Errors:* `404` for an unknown user, `503` when categorized resources are
+  unavailable, and a safe `500` response for unexpected failures.
+
+The feed excludes model scores, ranks, affinity/confidence values, raw policy
+diagnostics, and internal entity identifiers. Empty profiles remain valid; the
+policy decides which popularity or sparse-evidence categories can activate.
+
 ### Recommendation architecture
 
-The current live endpoint remains unchanged:
+The original live endpoint remains unchanged:
 
 ```text
 rated history
@@ -190,25 +203,27 @@ positive-weighted SVD + controlled historical popularity
     ↓
 ~3,591 deduplicated candidates on average
     ↓
-future personalized ranker
+equal-weight RRF (`k=60`)
     ↓
-future category/policy layer
+category policy V1.1
     ↓
 up to ~10 categories × ~20 films
 ```
 
 Candidate depth is intentionally much larger than the possible ~200 displayed
-slots so later ranking and category policy retain useful alternatives. Candidate
-generation is global and personalized retrieval only; it does not create
-category-specific pools.
+slots so ranking and category policy retain useful alternatives. Candidate
+generation is global and personalized retrieval only; category-specific pools
+are built after finalized RRF ordering.
 
 The offline LightGBM benchmark and weighted-RRF calibration live under
 [`experiments/ranker`](experiments/ranker/README.md). Equal-weight RRF with
 `k=60` remains the fixed global-ranking recommendation: it led aggregate
 validation, while unstable fold-specific tuning lost 1.00% global NDCG@20 on
-test. No research ranker, category policy, or hybrid path is wired into serving.
+test. No research ranker is wired into serving.
 `GET /users/{user_id}/recommendations` continues to use direct SVD mean pooling
 and the strategy string `SVD_Mean_Pooling`.
+`GET /recommendations/{user_id}/feed` separately exposes the finalized category
+policy V1.1 contract; neither endpoint uses NCF or LightGBM.
 
 ### Candidate-generation evidence
 

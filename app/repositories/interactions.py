@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Log
+from app.models import Log, User
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +85,30 @@ class InteractionRepository:
         watched: list[int] = []
         rated: list[RatedInteraction] = []
         for film_id, rating in result.all():
+            normalized_id = int(film_id)
+            watched.append(normalized_id)
+            if rating is not None:
+                rated.append(RatedInteraction(normalized_id, float(rating)))
+        return RecommendationHistory(tuple(watched), tuple(rated))
+
+    async def get_existing_user_recommendation_history(
+        self, user_id: int
+    ) -> RecommendationHistory | None:
+        """Load one user's history and distinguish an empty profile from no user."""
+        result = await self._session.execute(
+            select(User.id, Log.film_id, Log.rating)
+            .outerjoin(Log, Log.user_id == User.id)
+            .where(User.id == user_id)
+        )
+        rows = result.all()
+        if not rows:
+            return None
+
+        watched: list[int] = []
+        rated: list[RatedInteraction] = []
+        for _, film_id, rating in rows:
+            if film_id is None:
+                continue
             normalized_id = int(film_id)
             watched.append(normalized_id)
             if rating is not None:

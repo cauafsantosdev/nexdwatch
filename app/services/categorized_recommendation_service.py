@@ -1,5 +1,6 @@
 """Internal orchestration for categorized recommendations; not a public backend."""
 
+import logging
 from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -23,9 +24,15 @@ from app.services.category_request_profile import (
     request_stage,
 )
 
+logger = logging.getLogger(__name__)
+
 
 class CategoryPolicyResourcesUnavailableError(RuntimeError):
     """Raised when internal candidate or catalog resources are not loaded."""
+
+
+class RecommendationUserNotFoundError(LookupError):
+    """Raised when a categorized feed is requested for an unknown user ID."""
 
 
 class CategorizedRecommendationService:
@@ -88,13 +95,17 @@ class CategorizedRecommendationService:
         """Load immutable artifacts and one bounded policy catalog snapshot."""
         if not self.load_candidate_artifacts():
             return False
-        return await self.load_policy_catalog()
+        loaded = await self.load_policy_catalog()
+        if loaded:
+            logger.info("Categorized recommendation resources loaded")
+        return loaded
 
     def unload_resources(self) -> None:
         self._candidate_service.unload_artifacts()
         self._catalog = None
         self._policy_engine = None
         self._popularity_rank_by_film = None
+        logger.info("Categorized recommendation resources unloaded")
 
     async def recommend(
         self,
@@ -126,7 +137,9 @@ class CategorizedRecommendationService:
             async with self._session_factory() as session:
                 history = await InteractionRepository(
                     session
-                ).get_recommendation_history(user_id)
+                ).get_existing_user_recommendation_history(user_id)
+        if history is None:
+            raise RecommendationUserNotFoundError(user_id)
         candidates = self._candidate_service.generate_from_history(
             user_id, history, profiler=profiler
         )
@@ -205,3 +218,8 @@ class CategorizedRecommendationService:
             profiler.count("selected_film_count", len(selected_ids))
             profiler.count("materialized_category_count", len(categories))
         return result
+
+
+def build_categorized_recommendation_service() -> CategorizedRecommendationService:
+    """Construct one categorized service for ownership by an application worker."""
+    return CategorizedRecommendationService()

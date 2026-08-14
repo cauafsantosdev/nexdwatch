@@ -25,10 +25,13 @@ def test_api_startup_import_does_not_load_research_ml_dependencies() -> None:
     assert result.returncode == 0, result.stderr
 
 
-def test_api_startup_does_not_activate_internal_categorized_policy() -> None:
+def test_api_import_keeps_old_strategy_and_defers_categorized_resource_loading() -> (
+    None
+):
     script = (
         "import sys; import app.main; "
-        "assert 'app.services.categorized_recommendation_service' not in sys.modules; "
+        "assert not hasattr(app.main.app.state, "
+        "'categorized_recommendation_service'); "
         "from app.services.recommendation_service import RECOMMENDATION_STRATEGY; "
         "assert RECOMMENDATION_STRATEGY == 'SVD_Mean_Pooling'"
     )
@@ -62,10 +65,12 @@ def test_application_settings_have_no_neural_or_backend_selector() -> None:
     assert "RECOMMENDATION_BACKEND" not in setting_names
 
 
-def test_readme_describes_one_live_backend_and_isolates_neural_research() -> None:
+def test_readme_describes_live_surfaces_and_isolates_neural_research() -> None:
     readme = Path("README.md").read_text(encoding="utf-8")
 
-    assert "live `SVD_Mean_Pooling` service" in readme
+    assert "`SVD_Mean_Pooling` endpoint remains available" in readme
+    assert "GET /recommendations/{user_id}/feed" in readme
+    assert "category policy V1.1" in readme
     assert "experiments/neural_retrieval/" in readme
     assert "**Neural Option:**" not in readme
     assert "Both backends" not in readme

@@ -253,6 +253,33 @@ def test_interaction_repository_loads_policy_history_in_one_query() -> None:
     session.execute.assert_awaited_once()
 
 
+def test_existing_user_history_distinguishes_empty_profile_in_one_query() -> None:
+    execute_result = SimpleNamespace(all=lambda: [(3, None, None)])
+    session = SimpleNamespace(execute=AsyncMock(return_value=execute_result))
+
+    history = asyncio.run(
+        InteractionRepository(session).get_existing_user_recommendation_history(3)
+    )
+
+    assert history is not None
+    assert history.watched_film_ids == ()
+    assert history.rated_interactions == ()
+    session.execute.assert_awaited_once()
+    assert "LEFT OUTER JOIN logs" in str(session.execute.await_args.args[0])
+
+
+def test_existing_user_history_returns_none_for_unknown_user() -> None:
+    execute_result = SimpleNamespace(all=list)
+    session = SimpleNamespace(execute=AsyncMock(return_value=execute_result))
+
+    history = asyncio.run(
+        InteractionRepository(session).get_existing_user_recommendation_history(999)
+    )
+
+    assert history is None
+    session.execute.assert_awaited_once()
+
+
 def test_interaction_repository_returns_all_watched_rows() -> None:
     scalar_result = SimpleNamespace(all=lambda: [7, 8])
     execute_result = SimpleNamespace(scalars=lambda: scalar_result)
