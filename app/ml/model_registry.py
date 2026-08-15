@@ -45,6 +45,8 @@ _VERSION_PATTERN = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[a-f0-9]{8}$")
 
 @dataclass(frozen=True, slots=True)
 class ModelManifest:
+    """Immutable identity, training statistics, compatibility, and checksums."""
+
     schema: int
     model_version: str
     created_at: str
@@ -62,10 +64,12 @@ class ModelManifest:
     snapshot_measured_at: str
 
     def to_dict(self) -> dict[str, Any]:
+        """Return the stable JSON-compatible manifest representation."""
         return asdict(self)
 
     @property
     def trained_statistics(self) -> TrainedModelStatistics:
+        """Project manifest counters into retraining-decision state."""
         return TrainedModelStatistics(
             trained_at=_parse_utc(self.trained_at),
             eligible_user_count=self.eligible_user_count,
@@ -77,6 +81,8 @@ class ModelManifest:
 
 @dataclass(frozen=True, slots=True)
 class ValidatedModelBundle:
+    """One fully checked bundle and its loaded SVD/FAISS resources."""
+
     root: Path
     manifest: ModelManifest
     artifacts: SVDArtifacts
@@ -84,6 +90,8 @@ class ValidatedModelBundle:
 
 @dataclass(frozen=True, slots=True)
 class ServingModelLocation:
+    """Resolved flat or versioned location shared by both serving services."""
+
     root: Path
     model_version: str
     popularity_path: Path
@@ -93,15 +101,19 @@ class ServingModelLocation:
 
 @dataclass(frozen=True, slots=True)
 class ModelPointer:
+    """Authoritative selected version plus activation-recovery lineage."""
+
     model_version: str
     previous_version: str | None = None
 
 
 def model_root(artifact_root: str | Path) -> Path:
+    """Return the immutable versioned-bundle directory below an artifact root."""
     return Path(artifact_root) / "models"
 
 
 def new_model_version(now: datetime | None = None) -> str:
+    """Create a sortable timestamped version identifier with collision entropy."""
     timestamp = (now or datetime.now(UTC)).astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
     return f"{timestamp}-{uuid.uuid4().hex[:8]}"
 
@@ -127,6 +139,7 @@ def _package_version(package: str) -> str:
 
 
 def sha256_file(path: Path) -> str:
+    """Stream one artifact into its SHA-256 identity without loading it into RAM."""
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
@@ -144,7 +157,15 @@ def create_manifest(
     rated_interaction_count: int,
     film_count: int,
 ) -> ModelManifest:
-    """Create a manifest after all payload artifacts have been written."""
+    """Create a compatibility and checksum manifest for completed payload files.
+
+    Every serving artifact is hashed after it exists, and runtime/training semantics
+    are frozen into the manifest so incompatible bundles fail before activation.
+
+    Raises:
+        ValueError: If ``model_version`` does not match the safe version format.
+        OSError: If any payload cannot be streamed for its checksum.
+    """
     _validate_version(model_version)
     checksums = {
         filename: sha256_file(bundle_root / filename)
@@ -173,6 +194,7 @@ def create_manifest(
 
 
 def write_manifest(manifest: ModelManifest, path: Path) -> None:
+    """Create and durably flush a manifest without overwriting existing identity."""
     with path.open("x", encoding="utf-8") as stream:
         json.dump(manifest.to_dict(), stream, indent=2, sort_keys=True)
         stream.write("\n")
@@ -181,6 +203,14 @@ def write_manifest(manifest: ModelManifest, path: Path) -> None:
 
 
 def read_manifest(path: str | Path) -> ModelManifest:
+    """Parse and validate an exact manifest schema before trusting bundle identity.
+
+    Extra and missing fields are rejected together with incompatible constants,
+    timestamps, and checksum shapes.
+
+    Raises:
+        ValueError: If JSON, field identity, or compatibility validation fails.
+    """
     try:
         with Path(path).open(encoding="utf-8") as stream:
             payload = json.load(stream)
@@ -196,6 +226,7 @@ def read_manifest(path: str | Path) -> ModelManifest:
 
 
 def _validate_manifest(manifest: ModelManifest) -> None:
+    """Enforce frozen schema, model-shape, training, and checksum invariants."""
     if manifest.schema != MANIFEST_SCHEMA:
         raise ValueError("unsupported model manifest schema")
     _validate_version(manifest.model_version)
@@ -222,7 +253,21 @@ def _validate_manifest(manifest: ModelManifest) -> None:
 
 
 def validate_model_bundle(path: str | Path) -> ValidatedModelBundle:
-    """Fully validate one immutable model bundle before serving or promotion."""
+    """Fully cross-validate one immutable model bundle before it is selectable.
+
+    Directory/manifest identity, payload SHA-256 checksums, SVD/FAISS dimensions and
+    exact ID ordering, and production-popularity membership must all agree.
+
+    Returns:
+        ValidatedModelBundle: Manifest and already loaded SVD resources for the valid
+            immutable directory.
+
+    Raises:
+        ValueError: If any identity, checksum, compatibility, or cross-artifact
+            invariant fails.
+        OSError: If a required payload cannot be read.
+    """
+    # Validate immutable payload bytes before deserializing model resources.
     root = Path(path)
     manifest = read_manifest(root / MANIFEST_FILENAME)
     if root.name != manifest.model_version:
@@ -233,6 +278,7 @@ def validate_model_bundle(path: str | Path) -> ValidatedModelBundle:
             raise ValueError(f"bundle artifact is missing: {filename}")
         if sha256_file(artifact_path) != expected_checksum:
             raise ValueError(f"bundle artifact checksum mismatch: {filename}")
+    # Cross-check semantic identity after individual artifact formats are valid.
     artifacts = load_svd_artifacts(root)
     if artifacts.item_vectors.shape[1] != manifest.svd_dimension:
         raise ValueError("manifest and vectors have different dimensions")
@@ -253,7 +299,15 @@ def validate_model_bundle(path: str | Path) -> ValidatedModelBundle:
 
 
 def read_model_pointer(artifact_root: str | Path) -> ModelPointer | None:
-    """Read the authoritative pointer, accepting the original one-field format."""
+    """Read the authoritative pointer, accepting the original one-field format.
+
+    Returns:
+        ModelPointer | None: Selected version and optional recovery lineage, or
+            ``None`` when serving should use the legacy-flat layout.
+
+    Raises:
+        ValueError: If pointer JSON, fields, or version identities are invalid.
+    """
     pointer = model_root(artifact_root) / CURRENT_POINTER_FILENAME
     if not pointer.exists():
         return None
@@ -276,11 +330,13 @@ def read_model_pointer(artifact_root: str | Path) -> ModelPointer | None:
 
 
 def read_current_version(artifact_root: str | Path) -> str | None:
+    """Return the selected version, or ``None`` for legacy-flat serving."""
     pointer = read_model_pointer(artifact_root)
     return pointer.model_version if pointer is not None else None
 
 
 def _validate_legacy_serving_model(base: Path) -> None:
+    """Require a complete flat SVD/FAISS layout and compatible legacy popularity."""
     artifacts = load_svd_artifacts(base)
     popularity = read_popularity_artifact(base / "candidates" / "popularity.json")
     if not {entry.film_id for entry in popularity.films}.issubset(
@@ -292,7 +348,19 @@ def _validate_legacy_serving_model(base: Path) -> None:
 def resolve_serving_model(
     artifact_root: str | Path, *, validate: bool = True
 ) -> ServingModelLocation:
-    """Resolve exactly one versioned bundle, or the complete legacy flat layout."""
+    """Resolve exactly one versioned bundle or the complete legacy-flat layout.
+
+    ``current.json`` is authoritative when present. Without it, serving remains
+    backward compatible only if flat SVD/FAISS artifacts and ``candidates``
+    popularity are mutually compatible.
+
+    Returns:
+        ServingModelLocation: Effective roots, version identity, and manifest when
+            serving a versioned bundle.
+
+    Raises:
+        ValueError: If the pointer or selected artifacts fail validation.
+    """
     base = Path(artifact_root)
     current_version = read_current_version(base)
     if current_version is None:
@@ -320,7 +388,19 @@ def resolve_serving_model(
 def promote_model_bundle(
     artifact_root: str | Path, model_version: str
 ) -> PromotionResult:
-    """Atomically replace the authoritative current pointer after validation."""
+    """Validate a bundle and atomically replace the authoritative current pointer.
+
+    The prior selection is retained as activation-recovery lineage. A valid
+    legacy-flat layout is recorded explicitly so startup failure can restore it.
+
+    Returns:
+        PromotionResult: New and prior version identities after pointer replacement.
+
+    Raises:
+        ValueError: If the version or candidate bundle is invalid.
+        OSError: If durable pointer publication fails.
+    """
+    # Never create a pointer to payloads that have not passed full bundle validation.
     version_id = _validate_version(model_version)
     models = model_root(artifact_root)
     validate_model_bundle(models / version_id)
@@ -351,6 +431,8 @@ def _write_current_pointer(
     version_id = _validate_version(model_version)
     if previous_version is not None and previous_version != "legacy-flat":
         _validate_version(previous_version)
+    # Flush file contents before atomic replacement, then fsync the parent directory
+    # so the renamed selection survives a host crash.
     models.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=".current.", suffix=".tmp", dir=models
@@ -380,6 +462,11 @@ def _write_current_pointer(
 
 
 def list_valid_model_bundles(artifact_root: str | Path) -> list[ModelManifest]:
+    """Return fully validated bundles ordered from newest to oldest training time.
+
+    Invalid or partially built directories are ignored and logged; only safe version
+    names are considered retention or rollback candidates.
+    """
     models = model_root(artifact_root)
     if not models.exists():
         return []
@@ -397,7 +484,17 @@ def list_valid_model_bundles(artifact_root: str | Path) -> list[ModelManifest]:
 def apply_model_retention(
     artifact_root: str | Path, *, keep_previous: int
 ) -> tuple[str, ...]:
-    """Keep current plus the configured number of most recent rollback bundles."""
+    """Keep current plus the configured number of newest rollback bundles.
+
+    Deletion targets are resolved beneath the exact models directory and revalidated
+    against the safe version pattern before removal.
+
+    Returns:
+        tuple[str, ...]: Removed model versions in newest-to-oldest scan order.
+
+    Raises:
+        ValueError: If a resolved deletion target escapes the models directory.
+    """
     current = read_current_version(artifact_root)
     manifests = list_valid_model_bundles(artifact_root)
     keep = set(
@@ -422,7 +519,11 @@ def apply_model_retention(
 
 
 def select_rollback_target(artifact_root: str | Path) -> ModelManifest:
-    """Return the newest valid bundle strictly older than current."""
+    """Return the newest valid bundle trained strictly before the current model.
+
+    Raises:
+        LookupError: If no current version or eligible older valid bundle exists.
+    """
     current = read_current_version(artifact_root)
     if current is None:
         raise LookupError("no versioned current model is configured")
@@ -441,6 +542,7 @@ def select_rollback_target(artifact_root: str | Path) -> ModelManifest:
 
 
 def rollback_model(artifact_root: str | Path) -> PromotionResult:
+    """Atomically select the newest valid bundle strictly older than current."""
     target = select_rollback_target(artifact_root)
     return promote_model_bundle(artifact_root, target.model_version)
 
@@ -448,7 +550,21 @@ def rollback_model(artifact_root: str | Path) -> PromotionResult:
 def recover_previous_model(
     artifact_root: str | Path, failed_version: str
 ) -> ServingModelLocation:
-    """Restore activation lineage once when a promoted bundle cannot start."""
+    """Restore activation lineage once when a promoted bundle cannot start.
+
+    Recovery proceeds only if the failed version is still current, preventing a
+    stale process from overwriting a newer promotion. Legacy restoration removes the
+    pointer by renaming it to an activation-failure record; versioned restoration
+    validates the predecessor before atomically selecting it.
+
+    Returns:
+        ServingModelLocation: Fully validated location restored for startup.
+
+    Raises:
+        RuntimeError: If another process has already changed the current selection.
+        LookupError: If no valid predecessor can be selected.
+        ValueError: If recovery lineage or predecessor artifacts are invalid.
+    """
     base = Path(artifact_root)
     pointer = read_model_pointer(base)
     if pointer is None or pointer.model_version != failed_version:
@@ -477,10 +593,12 @@ def recover_previous_model(
 
 
 def bundle_disk_bytes(path: str | Path) -> int:
+    """Measure regular payload bytes directly contained in one bundle."""
     return sum(item.stat().st_size for item in Path(path).iterdir() if item.is_file())
 
 
 def log_validation_timing(path: str | Path) -> ValidatedModelBundle:
+    """Validate one bundle and log its identity, duration, and disk footprint."""
     started = time.perf_counter()
     validated = validate_model_bundle(path)
     logger.info(

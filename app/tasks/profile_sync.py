@@ -27,17 +27,29 @@ _PUBLIC_FAILURE = TaskError(
 class WorkerTaskStore(Protocol):
     """Synchronous task-store operations needed by the worker."""
 
-    def get_task(self, task_id: str) -> TaskMetadata | None: ...
+    def get_task(self, task_id: str) -> TaskMetadata | None:
+        """Read application-owned task metadata by identifier."""
+        ...
 
-    def save_task(self, task: TaskMetadata) -> None: ...
+    def save_task(self, task: TaskMetadata) -> None:
+        """Persist the latest worker-visible task state."""
+        ...
 
-    def claim_active(self, username: str, task_id: str) -> bool: ...
+    def claim_active(self, username: str, task_id: str) -> bool:
+        """Claim or confirm active ownership for a username and task."""
+        ...
 
-    def release_active(self, username: str, task_id: str) -> bool: ...
+    def release_active(self, username: str, task_id: str) -> bool:
+        """Release active ownership only for the matching task."""
+        ...
 
-    def set_fresh(self, username: str, task_id: str) -> None: ...
+    def set_fresh(self, username: str, task_id: str) -> None:
+        """Record the completed task as the username's freshness marker."""
+        ...
 
-    def close(self) -> None: ...
+    def close(self) -> None:
+        """Close the worker's synchronous store resources."""
+        ...
 
 
 def _new_worker_store() -> SyncRedisTaskStore:
@@ -58,7 +70,29 @@ def execute_profile_sync(
     profile_service: ProfileService,
     bridge: WorkerAsyncBridge,
 ) -> None:
-    """Execute one profile sync with public state and selective retries."""
+    """Execute one idempotent profile sync with public state and selective retries.
+
+    Active ownership prevents concurrent scrapes for one username. Terminal
+    redelivery is ignored, transient scraping may retry, and every failure records a
+    product-safe task error before ownership is released.
+
+    Args:
+        task: Bound Celery task supplying retry state and retry publication.
+        username: Normalized profile identity carried in the JSON-safe message.
+        task_id: Application and Celery identity for idempotency/ownership.
+        store: Invocation-owned synchronous Redis metadata adapter.
+        profile_service: Async scrape/persistence orchestrator.
+        bridge: Worker-process event-loop bridge for async application services.
+
+    Returns:
+        None: Progress and terminal results are persisted in Redis.
+
+    Raises:
+        Exception: Propagates classified task failure after state cleanup, or raises
+            Celery's retry signal for retryable provider failures.
+    """
+    # Redelivery is safe: missing metadata cannot be reconstructed, while terminal
+    # metadata proves the application already completed this task identity.
     metadata = store.get_task(task_id)
     if metadata is None:
         logger.error("Profile sync metadata missing task_id=%s", task_id)
@@ -66,6 +100,8 @@ def execute_profile_sync(
     if metadata.status in {TaskStatus.COMPLETED, TaskStatus.FAILED}:
         logger.info("Ignoring terminal redelivery task_id=%s", task_id)
         return
+    # Refresh or reclaim only this task's username ownership before exposing a
+    # PROCESSING transition. A different owner makes this delivery stale.
     if not store.claim_active(username, task_id):
         logger.warning(
             "Profile sync superseded task_id=%s username=%s", task_id, username
@@ -76,6 +112,8 @@ def execute_profile_sync(
     processing = metadata.processing()
     store.save_task(processing)
     try:
+        # Cross the persistent event-loop bridge once; retry classification stays at
+        # the Celery boundary where attempt count and time limits are available.
         result = bridge.run(profile_service.sync_profile(username))
     except TransientProfileScrapeError as exc:
         retries = int(task.request.retries)
@@ -96,6 +134,8 @@ def execute_profile_sync(
         _fail_task(store, processing, exc)
         raise
 
+    # Persist terminal success before freshness and lock cleanup. Those auxiliary
+    # failures are logged but cannot erase an already durable successful result.
     completed = processing.completed(
         TaskResult(user_id=result.user_id, logs_count=result.logs_count)
     )
@@ -129,6 +169,7 @@ def _fail_task(
     metadata: TaskMetadata,
     exception: Exception,
 ) -> None:
+    """Persist a product-safe failure and conditionally release active ownership."""
     logger.exception(
         "Profile sync failed task_id=%s username=%s",
         metadata.task_id,
@@ -151,7 +192,11 @@ def _fail_task(
     time_limit=settings.PROFILE_SYNC_HARD_TIME_LIMIT_SECONDS,
 )
 def profile_sync_task(task: Task, username: str, task_id: str) -> None:
-    """Celery entrypoint containing only primitive message arguments."""
+    """Run profile synchronization from primitive, JSON-safe message arguments.
+
+    A fresh synchronous Redis store is owned and closed by each Celery invocation;
+    asynchronous application work crosses the worker's persistent event-loop bridge.
+    """
     store = _new_worker_store()
     try:
         execute_profile_sync(

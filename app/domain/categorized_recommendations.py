@@ -12,6 +12,8 @@ EvidenceTier = Literal["minimum", "strong"]
 
 
 class CategoryRole(StrEnum):
+    """Product role used to prioritize rows for different history depths."""
+
     GENERAL = "general"
     PERSONALIZED = "personalized"
     DISCOVERY = "discovery"
@@ -20,6 +22,8 @@ class CategoryRole(StrEnum):
 
 
 class RecommendationReasonCode(StrEnum):
+    """Stable internal explanation vocabulary mapped to public reason schemas."""
+
     GLOBAL_RRF = "GLOBAL_RRF"
     SOURCE_AGREEMENT = "SOURCE_AGREEMENT"
     NON_HEAD_TASTE_MATCH = "NON_HEAD_TASTE_MATCH"
@@ -57,6 +61,7 @@ class RankedCandidate:
         rrf_rank: int,
         popularity_stratum: PopularityStratum,
     ) -> "RankedCandidate":
+        """Attach finalized RRF rank metadata to a retrieval candidate."""
         return cls(
             film_id=candidate.film_id,
             svd_score=candidate.svd_score,
@@ -72,10 +77,12 @@ class RankedCandidate:
 
     @property
     def retrieved_by_both(self) -> bool:
+        """Return whether both independent retrieval sources found the film."""
         return self.retrieved_by_svd and self.retrieved_by_popularity
 
     @property
     def source_membership(self) -> str:
+        """Return the stable source label exposed by categorized results."""
         if self.retrieved_by_both:
             return "both"
         if self.retrieved_by_svd:
@@ -104,6 +111,8 @@ class EntityPreferenceRecord:
 
 @dataclass(frozen=True, slots=True)
 class AnchorPreference:
+    """Highly rated indexed film eligible to seed an anchor neighborhood."""
+
     film_id: int
     title: str
     rating: float
@@ -163,6 +172,8 @@ class CategoryProposal:
 
 @dataclass(frozen=True, slots=True)
 class CategorizedRecommendation:
+    """One fully materialized film selected for a categorized response row."""
+
     film_id: int
     title: str
     year: int | None
@@ -175,6 +186,8 @@ class CategorizedRecommendation:
 
 @dataclass(frozen=True, slots=True)
 class RecommendationCategory:
+    """One allocated category with display title, evidence, and ordered items."""
+
     key: str
     family: str
     role: CategoryRole
@@ -194,6 +207,8 @@ class AllocatedCategory:
 
 @dataclass(frozen=True, slots=True)
 class CategoryPolicyResult:
+    """Complete internal policy output before display metadata materialization."""
+
     user_id: int
     ranked_candidates: tuple[RankedCandidate, ...]
     proposals: tuple[CategoryProposal, ...]
@@ -203,6 +218,8 @@ class CategoryPolicyResult:
 
 @dataclass(frozen=True, slots=True)
 class CategorizedRecommendationResult:
+    """Transport-neutral categorized feed result returned by the serving service."""
+
     user_id: int
     categories: tuple[RecommendationCategory, ...]
     diagnostics: dict[str, Any]

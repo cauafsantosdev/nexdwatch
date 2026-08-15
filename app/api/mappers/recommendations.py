@@ -33,7 +33,18 @@ CATEGORY_PRODUCT_METADATA = MappingProxyType(
 def map_recommendation_feed(
     result: CategorizedRecommendationResult,
 ) -> RecommendationFeedResponse:
-    """Preserve internal order while removing policy and model implementation data."""
+    """Preserve policy order while removing model and diagnostic implementation data.
+
+    Only product-approved reason fields cross this boundary. RRF scores, ranks,
+    affinities, support diagnostics, and internal category roles remain private.
+
+    Args:
+        result: Internal categorized domain result after policy allocation.
+
+    Returns:
+        RecommendationFeedResponse: Policy-ordered, non-empty shelves containing only
+            approved display and reason fields.
+    """
     return RecommendationFeedResponse(
         user_id=result.user_id,
         categories=[
@@ -61,6 +72,12 @@ def map_recommendation_feed(
 
 
 def _map_reason(reason: RecommendationReason) -> RecommendationReasonResponse:
+    """Project an internal reason to approved code, anchor, and entity fields.
+
+    Partial anchors/entities are omitted as a pair so inconsistent internal optional
+    metadata cannot leak a malformed public object. Support and ranking evidence are
+    intentionally discarded.
+    """
     anchor = None
     if reason.anchor_film_id is not None and reason.anchor_title is not None:
         anchor = RecommendationAnchorResponse(

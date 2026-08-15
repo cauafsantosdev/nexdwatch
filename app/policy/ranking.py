@@ -14,7 +14,26 @@ def rank_candidates_by_rrf(
     *,
     config: CategoryPolicyConfig = DEFAULT_POLICY_CONFIG,
 ) -> tuple[RankedCandidate, ...]:
-    """Apply equal-weight k=60 RRF with missing-source zero and film-ID ties."""
+    """Fuse SVD and popularity source positions into one exact global ordering.
+
+    Each present source contributes ``1 / (k + rank)`` with the frozen default
+    ``k=60``; an absent source contributes zero. Scores descend globally and exact
+    ties resolve by film ID, making output reproducible across processes.
+
+    Args:
+        candidates: Unique source-annotated films from candidate generation.
+        popularity_rank_by_film: Full controlled-popularity rank lookup used for
+            head/mid/tail classification.
+        popularity_film_count: Denominator defining stratum percentile boundaries.
+        config: Frozen policy thresholds, including the RRF smoothing constant.
+
+    Returns:
+        tuple[RankedCandidate, ...]: Fused candidates with one-based global rank and
+            popularity stratum.
+
+    Raises:
+        ValueError: If the popularity universe is empty or candidates repeat IDs.
+    """
     if popularity_film_count <= 0:
         raise ValueError("popularity film count must be positive")
     if len({candidate.film_id for candidate in candidates}) != len(candidates):
@@ -44,6 +63,7 @@ def rank_candidates_by_rrf(
 
 
 def _rrf_score(candidate: RecommendationCandidate, k: int) -> float:
+    """Compute equal-weight RRF, assigning zero to each missing source."""
     if k <= 0:
         raise ValueError("RRF k must be positive")
     return (
@@ -56,6 +76,7 @@ def _rrf_score(candidate: RecommendationCandidate, k: int) -> float:
 
 
 def _popularity_stratum(rank: int, film_count: int) -> str:
+    """Classify a full-catalog popularity rank into 10/40/50 percent bands."""
     head_stop = math.ceil(film_count * 0.10)
     mid_stop = math.ceil(film_count * 0.50)
     if rank <= head_stop:

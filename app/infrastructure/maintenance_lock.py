@@ -16,15 +16,27 @@ return 0
 
 
 class RedisLockClient(Protocol):
-    def set(self, name: str, value: str, *, nx: bool, ex: int) -> object: ...
+    """Minimal synchronous Redis operations required by the lock adapter."""
 
-    def eval(self, script: str, numkeys: int, *keys_and_args: object) -> object: ...
+    def set(self, name: str, value: str, *, nx: bool, ex: int) -> object:
+        """Set a token only when absent and apply a crash-recovery expiry."""
+        ...
 
-    def close(self) -> None: ...
+    def eval(self, script: str, numkeys: int, *keys_and_args: object) -> object:
+        """Evaluate the atomic compare-and-delete release script."""
+        ...
+
+    def close(self) -> None:
+        """Close the client connection."""
+        ...
 
 
 class MaintenanceLock:
-    """Token-owned lock whose TTL makes worker crashes recoverable."""
+    """Token-owned singleton lock whose TTL makes worker crashes recoverable.
+
+    Each instance owns a random token. Release uses compare-and-delete so an expired
+    lock can never delete a successor's ownership after a slow worker resumes.
+    """
 
     def __init__(
         self,
@@ -34,6 +46,11 @@ class MaintenanceLock:
         ttl_seconds: int,
         client: RedisLockClient | None = None,
     ) -> None:
+        """Create one token owner for a namespaced maintenance operation.
+
+        The Redis client is process-local and must be closed after use. ``ttl_seconds``
+        bounds stale ownership if a worker dies without reaching release.
+        """
         self._client = client or redis.from_url(redis_url, decode_responses=True)
         self._key = f"nexdwatch:maintenance:lock:{key}"
         self._ttl_seconds = ttl_seconds
@@ -41,6 +58,11 @@ class MaintenanceLock:
         self._acquired = False
 
     def acquire(self) -> bool:
+        """Attempt one non-blocking Redis acquisition with crash-recovery expiry.
+
+        Returns:
+            bool: ``True`` only when this instance created the lock and owns its token.
+        """
         self._acquired = bool(
             self._client.set(
                 self._key,
@@ -52,6 +74,14 @@ class MaintenanceLock:
         return self._acquired
 
     def release(self) -> bool:
+        """Release only when this instance still owns the Redis token.
+
+        The compare-and-delete script prevents an expired slow worker from deleting a
+        successor's lock after ownership has changed.
+
+        Returns:
+            bool: ``True`` only when Redis deleted this instance's current ownership.
+        """
         if not self._acquired:
             return False
         released = bool(
@@ -61,10 +91,16 @@ class MaintenanceLock:
         return released
 
     def close(self) -> None:
+        """Close the underlying Redis client after maintenance finishes."""
         self._client.close()
 
     @contextmanager
     def held(self) -> Iterator[bool]:
+        """Yield acquisition state and token-safely release successful ownership.
+
+        Release runs in ``finally`` for normal completion and exceptions; the TTL is
+        still the recovery boundary for process death or lost Redis connectivity.
+        """
         acquired = self.acquire()
         try:
             yield acquired

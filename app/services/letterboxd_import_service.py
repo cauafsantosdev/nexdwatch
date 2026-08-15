@@ -1,4 +1,9 @@
-"""Orchestrate offline Letterboxd export ingestion."""
+"""Orchestrate safe offline Letterboxd export resolution and ingestion.
+
+Official ZIP rows are matched against the existing catalog without network access.
+Only unique normalized title/year matches enter the shared profile persistence path;
+ambiguous and missing films remain explicit in the import result.
+"""
 
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Sequence
@@ -51,7 +56,12 @@ SyncProfile = Callable[..., Awaitable[None]]
 
 
 class LetterboxdImportService:
-    """Resolve an uploaded export against the current film catalog."""
+    """Coordinate request-scoped archive parsing, catalog reads, and persistence.
+
+    The service owns no persistent resources. Its session factory scopes independent
+    catalog/user reads, while the injected syncer owns the transactional known/unknown
+    film reconciliation used by live profile ingestion.
+    """
 
     def __init__(
         self,
@@ -64,12 +74,28 @@ class LetterboxdImportService:
     async def import_export(
         self, username: str, archive: bytes
     ) -> LetterboxdImportResult:
-        """Parse, catalog-resolve, and persist an official export ZIP."""
+        """Parse, catalog-resolve, and persist one official export ZIP.
+
+        Candidate catalog rows are bounded by the years present in the export. Title
+        resolution completes in memory, and at least one unambiguous film is required
+        before the shared profile sync writes any state.
+
+        Returns:
+            LetterboxdImportResult: Persisted user/counts plus every unresolved film.
+
+        Raises:
+            LetterboxdExportError: If archive safety or CSV validation fails.
+            NoResolvedFilmsError: If no entry maps uniquely to the current catalog.
+            Exception: Propagates database failures after transaction rollback.
+        """
+        # Parse the bounded archive first, then issue one year-filtered catalog query.
         export = parse_letterboxd_export(archive)
         years = {entry.year for entry in export.entries}
         async with self._session_factory() as session:
             films = await FilmRepository(session).get_catalog_by_years(years)
 
+        # Resolve before persistence so ambiguity is explicit and cannot select a film
+        # by incidental database ordering.
         profile, unresolved = resolve_export_profile(
             username=username,
             entries=export.entries,
@@ -80,6 +106,8 @@ class LetterboxdImportService:
                 "No films in this export could be resolved against the catalog."
             )
 
+        # Delegate to the same idempotent Log/FilmQueue/LogPending transaction used by
+        # online scraping, then re-read the committed public user identity.
         await self._syncer(profile, session_factory=self._session_factory)
 
         async with self._session_factory() as session:
@@ -100,7 +128,15 @@ def resolve_export_profile(
     entries: Sequence[LetterboxdExportEntry],
     catalog: Sequence[CatalogFilm],
 ) -> tuple[ScrapedProfile, tuple[UnresolvedExportFilm, ...]]:
-    """Resolve entries by normalized title/year with explicit ambiguity."""
+    """Resolve export entries by normalized title/year with explicit ambiguity.
+
+    Display titles take precedence; original titles are considered only when the
+    display-title key has no candidate. Exactly one film ID is required, and URI is
+    diagnostic only because short Letterboxd URIs do not encode the local slug.
+
+    Returns:
+        A typed profile of uniquely resolved watches and ordered unresolved records.
+    """
     title_index = _build_index(catalog, original=False)
     original_title_index = _build_index(catalog, original=True)
     watches: list[ScrapedWatch] = []
@@ -134,6 +170,7 @@ def resolve_export_profile(
 def _build_index(
     catalog: Sequence[CatalogFilm], *, original: bool
 ) -> dict[tuple[str, int | None], dict[int, CatalogFilm]]:
+    """Index catalog candidates by normalized title/year without hiding ambiguity."""
     index: defaultdict[tuple[str, int | None], dict[int, CatalogFilm]] = defaultdict(
         dict
     )

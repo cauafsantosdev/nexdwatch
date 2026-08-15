@@ -1,3 +1,5 @@
+"""Maintains the legacy-flat SVD training workflow for compatibility."""
+
 import json
 import logging
 from pathlib import Path
@@ -20,7 +22,24 @@ settings = get_settings()
 def train_svd_model(
     artifact_root: str | Path | None = None,
 ) -> FaissIndexBuildResult | None:
-    """Train the current SVD model and write its established artifacts."""
+    """Train and publish the legacy-flat SVD artifact layout.
+
+    Rated PostgreSQL interactions are deduplicated by user/film, pivoted to a dense
+    matrix, reduced to 32 item factors, and row-normalized for inner-product search.
+    NumPy vectors, JSON film identities, and exact FAISS output are written directly
+    below the configured root. New production maintenance should use versioned
+    bundle training; this function remains for administrative compatibility.
+
+    Args:
+        artifact_root: Optional destination overriding the configured flat root.
+
+    Returns:
+        FaissIndexBuildResult: Written index metadata, or ``None`` when the database
+            read fails or no rated interactions exist.
+
+    Raises:
+        Exception: Propagates training and artifact-write failures after data loading.
+    """
     logger.info("Starting SVD training pipeline...")
 
     sync_db_url = f"postgresql+psycopg2://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
@@ -29,6 +48,8 @@ def train_svd_model(
     logger.info("Reading logs from database...")
     query = "SELECT user_id, film_id, rating FROM logs WHERE rating IS NOT NULL"
 
+    # Own and dispose the synchronous engine within extraction; a read failure is the
+    # legacy command's explicit no-result outcome.
     try:
         df = pd.read_sql(query, engine)
         df = df.drop_duplicates(subset=["user_id", "film_id"])
@@ -44,6 +65,7 @@ def train_svd_model(
 
     logger.info("Data loaded: %d logs", len(df))
 
+    # Preserve the established dense pivot and frozen random seed for compatibility.
     logger.info("Creating User-Item Matrix...")
     matrix = df.pivot(index="user_id", columns="film_id", values="rating").fillna(0)
     film_ids = list(matrix.columns)
@@ -53,9 +75,12 @@ def train_svd_model(
     svd.fit(matrix)
     item_factors = svd.components_.T
 
+    # L2 normalization makes exact inner product equivalent to cosine similarity for
+    # all non-zero item factors and is validated again by the FAISS builder.
     logger.info("Normalizing vectors...")
     item_factors_norm = normalize(item_factors, axis=1)
 
+    # Write the legacy-flat artifact triplet consumed by fallback serving.
     logger.info("Saving artifacts...")
     output_dir = Path(artifact_root or settings.ARTIFACT_ROOT)
     output_dir.mkdir(parents=True, exist_ok=True)

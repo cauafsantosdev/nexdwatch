@@ -1,4 +1,9 @@
-"""Parse official Letterboxd export archives without network access."""
+"""Parse official Letterboxd export archives as a safe offline ingestion source.
+
+ZIP members are inspected and read in memory without filesystem extraction or
+network access. Bounded archive/member sizes and strict CSV validation protect the
+API boundary before watched and rating rows are merged by Letterboxd URI.
+"""
 
 import csv
 import io
@@ -55,16 +60,31 @@ class _WatchedRow:
 
 
 def parse_letterboxd_export(archive: bytes) -> LetterboxdExport:
-    """Parse ``watched.csv`` and optional ``ratings.csv`` from ZIP bytes.
+    """Validate and merge ``watched.csv`` with optional ``ratings.csv``.
 
     Members are read directly from memory. No paths are extracted and no
-    Letterboxd URLs are followed.
+    Letterboxd URLs are followed. Duplicate watched URIs must describe the same
+    film, and duplicate rating URIs must agree before a result is returned.
+
+    Args:
+        archive: Raw official export ZIP, bounded by ``MAX_ARCHIVE_BYTES``.
+
+    Returns:
+        LetterboxdExport: Unique watched films in watched-file order, enriched with
+            ratings when the optional ratings member contains the same URI.
+
+    Raises:
+        LetterboxdExportError: If the ZIP exceeds safety limits, required members
+            are absent, member data is unreadable, or either CSV violates the
+            expected schema and value constraints.
     """
     if not archive or len(archive) > MAX_ARCHIVE_BYTES:
         raise LetterboxdExportError("Export ZIP is empty or exceeds the size limit.")
 
     try:
         with zipfile.ZipFile(io.BytesIO(archive)) as export_zip:
+            # Validate the archive inventory before decompressing any member; this
+            # bounds both adversarial member counts and aggregate expansion.
             members = export_zip.infolist()
             if len(members) > MAX_ARCHIVE_MEMBERS:
                 raise LetterboxdExportError("Export ZIP contains too many files.")
@@ -73,6 +93,8 @@ def parse_letterboxd_export(archive: bytes) -> LetterboxdExport:
                     "Export ZIP exceeds the uncompressed size limit."
                 )
 
+            # Match by basename for official exports wrapped in a top-level folder,
+            # while rejecting ambiguous duplicate basenames.
             watched_member = _find_member(members, "watched.csv", required=True)
             ratings_member = _find_member(members, "ratings.csv", required=False)
             watched_bytes = _read_member(export_zip, watched_member)
@@ -92,6 +114,8 @@ def parse_letterboxd_export(archive: bytes) -> LetterboxdExport:
     ) as exc:
         raise LetterboxdExportError("Uploaded file is not a valid ZIP export.") from exc
 
+    # Parse independently, then join by stable Letterboxd URI rather than the
+    # display title/year pair, which can be ambiguous or corrected over time.
     watched_rows = _parse_watched(watched_bytes)
     ratings = _parse_ratings(ratings_bytes) if ratings_bytes is not None else {}
     entries = tuple(
@@ -109,6 +133,12 @@ def parse_letterboxd_export(archive: bytes) -> LetterboxdExport:
 def _find_member(
     members: list[zipfile.ZipInfo], basename: str, *, required: bool
 ) -> zipfile.ZipInfo | None:
+    """Find one case-insensitive member basename without trusting archive paths.
+
+    Raises:
+        LetterboxdExportError: If a required member is missing or the basename is
+            ambiguous anywhere in the archive.
+    """
     matches = [
         member
         for member in members
@@ -126,6 +156,12 @@ def _find_member(
 
 
 def _read_member(export_zip: zipfile.ZipFile, member: zipfile.ZipInfo | None) -> bytes:
+    """Read one already-vetted member and verify its advertised byte size.
+
+    Raises:
+        LetterboxdExportError: If decompression fails or produces a size different
+            from the central-directory metadata.
+    """
     if member is None:
         return b""
     try:
@@ -142,6 +178,15 @@ def _read_member(export_zip: zipfile.ZipFile, member: zipfile.ZipInfo | None) ->
 def _read_csv(
     contents: bytes, filename: str, required_headers: frozenset[str]
 ) -> list[dict[str, str]]:
+    """Decode and validate a Letterboxd CSV into normalized non-empty rows.
+
+    Header names are trimmed, required columns and uniqueness are enforced, and
+    malformed variable-width records are rejected instead of being partially read.
+
+    Raises:
+        LetterboxdExportError: If UTF-8 decoding, header validation, or strict CSV
+            parsing fails.
+    """
     try:
         text = contents.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
@@ -161,6 +206,8 @@ def _read_csv(
                 f"{filename} is missing required columns: {missing_list}."
             )
 
+        # Discard entirely blank rows but preserve all named columns so the
+        # specialized parsers can apply field-level identity rules.
         rows: list[dict[str, str]] = []
         for raw_row in reader:
             if None in raw_row:
@@ -178,6 +225,12 @@ def _read_csv(
 
 
 def _parse_watched(contents: bytes) -> tuple[_WatchedRow, ...]:
+    """Return unique watched identities while preserving first-seen order.
+
+    Raises:
+        LetterboxdExportError: If required identity fields are blank, duplicate URIs
+            disagree, or no watched film remains.
+    """
     rows = _read_csv(contents, "watched.csv", _WATCHED_HEADERS)
     watched_by_uri: dict[str, _WatchedRow] = {}
     for row in rows:
@@ -203,6 +256,11 @@ def _parse_watched(contents: bytes) -> tuple[_WatchedRow, ...]:
 
 
 def _parse_ratings(contents: bytes) -> dict[str, float]:
+    """Map rating URIs to validated Letterboxd half-star values.
+
+    An absent or blank optional file produces an empty mapping. Conflicting
+    duplicate URI ratings are rejected rather than resolved arbitrarily.
+    """
     try:
         has_content = bool(contents.decode("utf-8-sig").strip())
     except UnicodeDecodeError as exc:
@@ -226,6 +284,12 @@ def _parse_ratings(contents: bytes) -> dict[str, float]:
 
 
 def _parse_rating(value: str) -> float:
+    """Validate one exact half-star rating in the inclusive 0.5–5.0 range.
+
+    Raises:
+        LetterboxdExportError: If the value is not decimal or is outside the
+            supported half-star scale.
+    """
     try:
         rating = Decimal(value)
     except InvalidOperation as exc:

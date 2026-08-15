@@ -21,19 +21,33 @@ class TaskInfrastructureError(RuntimeError):
 class AsyncTaskStore(Protocol):
     """Async task-store operations required by the task service."""
 
-    async def get_task(self, task_id: str) -> TaskMetadata | None: ...
+    async def get_task(self, task_id: str) -> TaskMetadata | None:
+        """Read application-owned task metadata by identifier."""
+        ...
 
-    async def save_task(self, task: TaskMetadata) -> None: ...
+    async def save_task(self, task: TaskMetadata) -> None:
+        """Persist the latest task state."""
+        ...
 
-    async def create_queued_if_inactive(self, task: TaskMetadata) -> bool: ...
+    async def create_queued_if_inactive(self, task: TaskMetadata) -> bool:
+        """Atomically create a task only when its username has no active owner."""
+        ...
 
-    async def get_active_task_id(self, username: str) -> str | None: ...
+    async def get_active_task_id(self, username: str) -> str | None:
+        """Return the current active task identifier for a username."""
+        ...
 
-    async def release_active(self, username: str, task_id: str) -> bool: ...
+    async def release_active(self, username: str, task_id: str) -> bool:
+        """Release active ownership only for the matching task identifier."""
+        ...
 
-    async def get_fresh_task_id(self, username: str) -> str | None: ...
+    async def get_fresh_task_id(self, username: str) -> str | None:
+        """Return a recently completed task identifier when one exists."""
+        ...
 
-    async def close(self) -> None: ...
+    async def close(self) -> None:
+        """Close task-store resources."""
+        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +75,12 @@ def enqueue_profile_sync(username: str, task_id: str) -> None:
 
 
 class TaskService:
-    """Coordinate task metadata, deduplication, freshness, and enqueueing."""
+    """Coordinate API-side task ownership, reuse, and broker publication.
+
+    The lifespan-scoped service owns an asynchronous Redis store. Redis scripts make
+    username ownership atomic, while Celery publication runs off the event loop. A
+    broker failure records safe terminal metadata and releases only this task's lock.
+    """
 
     def __init__(
         self,
@@ -79,9 +98,28 @@ class TaskService:
         *,
         force: bool = False,
     ) -> TaskSubmission:
-        """Create or reuse a durable profile synchronization task."""
+        """Create, reuse, or enqueue one durable profile synchronization task.
+
+        Active queued/processing work always wins. Unless ``force`` is set, a recent
+        completed task is also reused. New task metadata and username ownership are
+        created atomically before broker publication, with bounded race recovery for
+        stale ownership discovered between reads.
+
+        Args:
+            username: Letterboxd username; surrounding whitespace is ignored.
+            force: Bypass completed-task freshness, but never active ownership.
+
+        Returns:
+            TaskSubmission: Public task metadata plus whether existing work was reused.
+
+        Raises:
+            TaskInfrastructureError: If Redis is unavailable, ownership cannot be
+                resolved, or Celery publication fails.
+        """
         normalized_username = username.strip()
         try:
+            # Reuse live ownership first so forced callers cannot start concurrent
+            # scraping for the same username.
             active = await self._get_active(normalized_username)
             if active is not None:
                 return TaskSubmission(task=active, reused=True)
@@ -91,10 +129,13 @@ class TaskService:
                 if fresh is not None:
                     return TaskSubmission(task=fresh, reused=True)
 
+            # Atomically create metadata and ownership; a losing concurrent request
+            # receives the winner's task instead of publishing duplicate work.
             task, created = await self._create_with_race_recovery(normalized_username)
             if not created:
                 return TaskSubmission(task=task, reused=True)
             try:
+                # Celery's synchronous producer is moved off the FastAPI event loop.
                 await self._run_sync(
                     self._enqueue,
                     normalized_username,
@@ -106,6 +147,8 @@ class TaskService:
                     task.task_id,
                     normalized_username,
                 )
+                # Keep API-visible state truthful and release ownership conditionally
+                # when publication failed after Redis creation.
                 failed = task.failed(
                     TaskError(
                         code="profile_sync_unavailable",
@@ -146,6 +189,7 @@ class TaskService:
         await self._store.close()
 
     async def _get_active(self, username: str) -> TaskMetadata | None:
+        """Return live owned work and clean a stale active pointer when detected."""
         active_task_id = await self._store.get_active_task_id(username)
         if active_task_id is None:
             return None
@@ -159,6 +203,7 @@ class TaskService:
         return None
 
     async def _get_fresh(self, username: str) -> TaskMetadata | None:
+        """Return only a still-retained, successfully completed freshness target."""
         fresh_task_id = await self._store.get_fresh_task_id(username)
         if fresh_task_id is None:
             return None
@@ -170,6 +215,15 @@ class TaskService:
     async def _create_with_race_recovery(
         self, username: str
     ) -> tuple[TaskMetadata, bool]:
+        """Acquire username ownership with bounded concurrent-race recovery.
+
+        Returns:
+            tuple[TaskMetadata, bool]: The newly created task and ``True``, or the
+                concurrent winner and ``False``.
+
+        Raises:
+            TaskInfrastructureError: If three attempts cannot resolve ownership.
+        """
         for _ in range(3):
             task = TaskMetadata.queued(str(uuid4()), username)
             if await self._store.create_queued_if_inactive(task):

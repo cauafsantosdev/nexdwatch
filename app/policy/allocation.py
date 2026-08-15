@@ -30,7 +30,23 @@ def allocate_categories(
     *,
     config: CategoryPolicyConfig = DEFAULT_POLICY_CONFIG,
 ) -> tuple[tuple[AllocatedCategory, ...], dict[str, Any]]:
-    """Select viable proposals and allocate films under bounded relaxation."""
+    """Select viable proposals and allocate films under bounded relaxation.
+
+    Top Picks is allocated first and reserves its leading films. Later rows prefer
+    globally unseen films, then relax configured soft diversity caps only when a
+    semantically viable proposal would otherwise miss its minimum size.
+
+    Args:
+        proposals: Viable category inventories in deterministic proposal order.
+        profile: User evidence whose depth band controls portfolio role priority.
+        catalog: Immutable metadata used to enforce within-row diversity.
+        config: Frozen category count, overlap, repeat, and diversity limits.
+
+    Returns:
+        A tuple containing allocated categories and duplicate/overlap diagnostics.
+    """
+    # Top Picks is mandatory when available and reserves its leading identities from
+    # all later repetition, establishing the portfolio's general-purpose baseline.
     top = next(
         (proposal for proposal in proposals if proposal.key == "top_picks"), None
     )
@@ -43,6 +59,8 @@ def allocate_categories(
     selected_raw_sets = [set(top.ordered_candidate_ids[: top.maximum_size])]
     remaining = [proposal for proposal in proposals if proposal.key != "top_picks"]
 
+    # Recompute priority after every allocation because global novelty and overlap
+    # depend on films already assigned to the portfolio.
     while remaining and len(allocated) < config.maximum_categories:
         ordered = sorted(
             remaining,
@@ -87,6 +105,7 @@ def _proposal_priority(
     appearances: Counter[int],
     selected_sets: list[set[int]],
 ) -> tuple[Any, ...]:
+    """Order proposals by history-band role, evidence, novelty, and stable ties."""
     role_order = {
         "sparse": {
             CategoryRole.CULTURAL: 0,
@@ -129,8 +148,16 @@ def _allocate_one(
     catalog: PolicyCatalog,
     config: CategoryPolicyConfig,
 ) -> tuple[int, ...]:
+    """Fill one proposal through the policy's four bounded relaxation passes.
+
+    The allocator first requires globally new films under all caps, then relaxes
+    only soft decade/genre caps. Focused categories may subsequently reuse
+    non-reserved films, first with and then without those soft caps; hard director,
+    country, head-balance, and maximum-appearance limits always remain.
+    """
     selected: list[int] = []
     local_seen: set[int] = set()
+    # Pass 1: globally novel films satisfying both hard and soft diversity caps.
     _scan_candidates(
         proposal,
         selected,
@@ -143,6 +170,7 @@ def _allocate_one(
         relax_soft_caps=False,
     )
     if len(selected) < proposal.minimum_size:
+        # Pass 2: retain global novelty while relaxing generic decade/genre caps.
         _scan_candidates(
             proposal,
             selected,
@@ -155,6 +183,8 @@ def _allocate_one(
             relax_soft_caps=True,
         )
     if len(selected) < proposal.minimum_size and proposal.key in _FOCUSED_REPEAT_KEYS:
+        # Passes 3–4 permit bounded cross-category reuse only for semantically
+        # focused shelves, never for reserved Top Picks identities.
         _scan_candidates(
             proposal,
             selected,
@@ -193,6 +223,7 @@ def _scan_candidates(
     allow_repeats: bool,
     relax_soft_caps: bool,
 ) -> None:
+    """Append candidates allowed by the current repeat and diversity pass."""
     for film_id in proposal.ordered_candidate_ids:
         if len(selected) >= proposal.maximum_size or film_id in local_seen:
             continue
@@ -228,6 +259,7 @@ def _passes_diversity(
     *,
     relax_soft_caps: bool,
 ) -> bool:
+    """Enforce permanent hard caps and optionally relax generic soft caps."""
     film = catalog.film(film_id)
     if film is None:
         return False
@@ -271,6 +303,7 @@ def _would_exceed_entity_cap(
     family: str,
     cap: int,
 ) -> bool:
+    """Return whether adding a film would exceed any shared entity's row cap."""
     for entity in film.entities(family):
         count = sum(
             any(value.id == entity.id for value in other.entities(family))
@@ -293,6 +326,7 @@ def _would_exceed_decade_cap(
 def _allocation_diagnostics(
     categories: tuple[AllocatedCategory, ...],
 ) -> dict[str, Any]:
+    """Summarize cross-category duplication and pairwise allocated overlap."""
     appearances = Counter(
         film_id for category in categories for film_id in category.film_ids
     )

@@ -1,10 +1,13 @@
+"""Defines the persisted actor entity and its film relationship."""
+
 from sqlalchemy import Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.core.database import Base
 
 
 class Actor(Base):
-    """Film Actors table"""
+    """Normalized actor identity shared across film cast relationships."""
     __tablename__ = "actors"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

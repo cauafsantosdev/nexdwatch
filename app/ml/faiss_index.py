@@ -25,7 +25,22 @@ def prepare_faiss_inputs(
     item_vectors: ArrayLike,
     film_ids: Sequence[object] | NDArray[np.generic],
 ) -> tuple[NDArray[np.float32], NDArray[np.int64]]:
-    """Validate and convert recommendation artifacts for exact FAISS indexing."""
+    """Validate vectors and stable film identities for exact FAISS indexing.
+
+    Vectors must be a non-empty real matrix whose non-zero rows are already
+    L2-normalized. IDs must be unique, one-dimensional, exact int64 values with one
+    identity per vector row.
+
+    Returns:
+        A contiguous float32 vector matrix and matching contiguous int64 identities.
+
+    Raises:
+        ValueError: If shape, finiteness, normalization, count, or identity values
+            violate the retrieval artifact contract.
+        TypeError: If a film identity is boolean rather than an integer.
+    """
+    # Validate the source dtype before conversion so complex or nonnumeric values
+    # cannot be silently coerced into a plausible float32 matrix.
     raw_vectors = np.asarray(item_vectors)
     if raw_vectors.ndim != 2:
         raise ValueError("item embeddings must be a two-dimensional array")
@@ -43,6 +58,7 @@ def prepare_faiss_inputs(
     if not np.isfinite(vectors).all():
         raise ValueError("item embeddings must contain only finite values")
 
+    # Identity mapping is part of the model contract, not row-position metadata.
     ids = _prepare_film_ids(film_ids)
     if vectors.shape[0] != len(ids):
         raise ValueError("embedding rows and film ID count differ")
@@ -65,7 +81,19 @@ def build_faiss_index(
     film_ids: Sequence[object] | NDArray[np.generic],
     output_path: str | Path,
 ) -> FaissIndexBuildResult:
-    """Build and atomically write an exact ID-mapped inner-product index."""
+    """Build and atomically publish an exact ID-mapped inner-product index.
+
+    The complete index is written to a sibling temporary file, permissioned, and
+    replaced into the destination only after FAISS serialization succeeds. Cleanup
+    removes abandoned temporary output without touching an existing index.
+
+    Returns:
+        FaissIndexBuildResult: Persisted film count, vector dimension, and path.
+
+    Raises:
+        ValueError: If vector or film-identity validation fails.
+        OSError: If the destination cannot be created or atomically replaced.
+    """
     index = create_faiss_index(item_vectors, film_ids)
 
     destination = Path(output_path)
@@ -77,6 +105,7 @@ def build_faiss_index(
     )
     os.close(file_descriptor)
     temporary_path = Path(temporary_name)
+    # A same-directory temporary file keeps os.replace atomic on the target filesystem.
     try:
         faiss.write_index(index, str(temporary_path))
         temporary_path.chmod(0o644)
@@ -95,7 +124,11 @@ def create_faiss_index(
     item_vectors: ArrayLike,
     film_ids: Sequence[object] | NDArray[np.generic],
 ) -> faiss.IndexIDMap2:
-    """Build and validate an in-memory exact ID-mapped inner-product index."""
+    """Build and cross-check an exact ``IndexIDMap2(IndexFlatIP)`` in memory.
+
+    Actual database film IDs are stored as FAISS labels; callers never depend on
+    vector row positions when retrieving candidates.
+    """
     vectors, ids = prepare_faiss_inputs(item_vectors, film_ids)
     base_index = faiss.IndexFlatIP(vectors.shape[1])
     index = faiss.IndexIDMap2(base_index)
@@ -107,7 +140,11 @@ def create_faiss_index(
 def rebuild_faiss_index(
     artifact_root: str | Path,
 ) -> FaissIndexBuildResult:
-    """Rebuild retrieval.faiss from existing NumPy and JSON artifacts."""
+    """Rebuild ``retrieval.faiss`` from an existing vector/mapping pair.
+
+    This maintenance path preserves current SVD vectors and film identities, while
+    applying the same validation and atomic write guarantees as model training.
+    """
     artifact_directory = Path(artifact_root)
     vectors = np.load(
         artifact_directory / "item_embeddings.npy",
@@ -127,7 +164,13 @@ def validate_faiss_index(
     expected_shape: tuple[int, int],
     expected_ids: NDArray[np.int64],
 ) -> None:
-    """Validate exact index structure, shape, and stored film identities."""
+    """Validate exact index structure, shape, and stored film identities.
+
+    Raises:
+        TypeError: If the index is not an ID map wrapping exact flat IP search.
+        ValueError: If metric, dimensions, counts, or stored IDs disagree with the
+            vector and mapping artifacts.
+    """
     expected_count, expected_dimension = expected_shape
     if not isinstance(index, faiss.IndexIDMap2):
         raise TypeError("retrieval index must be an IndexIDMap2")
@@ -156,6 +199,13 @@ def get_faiss_ids(index: faiss.IndexIDMap2) -> NDArray[np.int64]:
 def _prepare_film_ids(
     film_ids: Sequence[object] | NDArray[np.generic],
 ) -> NDArray[np.int64]:
+    """Convert unique exact integer identities to a contiguous int64 array.
+
+    Raises:
+        TypeError: If an identity is boolean.
+        ValueError: If the sequence is not one-dimensional, contains non-integral or
+            out-of-range values, or repeats a film identity.
+    """
     raw_ids = np.asarray(film_ids, dtype=object)
     if raw_ids.ndim != 1:
         raise ValueError("film IDs must be a one-dimensional sequence")

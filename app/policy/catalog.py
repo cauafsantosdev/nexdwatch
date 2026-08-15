@@ -20,12 +20,16 @@ StoredFamily = Literal["director", "genre", "country", "language"]
 
 @dataclass(frozen=True, slots=True)
 class PolicyEntity:
+    """Interned metadata entity referenced by immutable policy films."""
+
     id: int
     name: str
 
 
 @dataclass(frozen=True, slots=True)
 class PolicyFilm:
+    """Minimal immutable film metadata required by category policy and display."""
+
     film_id: int
     title: str
     year: int | None
@@ -36,9 +40,11 @@ class PolicyFilm:
 
     @property
     def decade(self) -> int | None:
+        """Return the film's decade boundary when a release year is known."""
         return self.year // 10 * 10 if self.year is not None else None
 
     def entities(self, family: EntityFamily) -> tuple[PolicyEntity, ...]:
+        """Return normalized entities for one policy preference family."""
         if family == "director":
             return self.directors
         if family == "genre":
@@ -60,6 +66,7 @@ class PolicyCatalog:
     artifact_film_ids: frozenset[int]
 
     def film(self, film_id: int) -> PolicyFilm | None:
+        """Resolve one artifact film ID from the immutable metadata snapshot."""
         return self.films.get(film_id)
 
 
@@ -67,7 +74,21 @@ async def load_policy_catalog(
     session: AsyncSession,
     artifact_film_ids: tuple[int, ...] | frozenset[int],
 ) -> PolicyCatalog:
-    """Load scalar data and four relation families in five bounded queries."""
+    """Build the immutable policy snapshot in five bounded database queries.
+
+    Scalar films and four relationship families are filtered to the active artifact
+    vocabulary, entity objects are interned per family, and memberships are sorted
+    by stable identity. The caller owns the session and transaction semantics.
+
+    Args:
+        session: Open async session used only for snapshot reads.
+        artifact_film_ids: Exact model identity universe policy may materialize.
+
+    Returns:
+        PolicyCatalog: Metadata keyed by available film ID plus the complete artifact
+            identity set, including model films absent from PostgreSQL metadata.
+    """
+    # Read scalar catalog values once, then filter in memory to the model vocabulary.
     allowed = frozenset(int(film_id) for film_id in artifact_film_ids)
     scalar_result = await session.execute(select(Film.id, Film.title, Film.year))
     scalars = {
@@ -87,6 +108,8 @@ async def load_policy_catalog(
     entity_pools: dict[str, dict[int, PolicyEntity]] = {
         family: {} for family in relation_specs
     }
+    # Intern relationship entities so repeated memberships share compact immutable
+    # values throughout the lifespan-owned snapshot.
     for family, (association, model, entity_column) in relation_specs.items():
         result = await session.execute(
             select(association.c.film_id, model.id, model.name).join(
@@ -120,6 +143,7 @@ async def load_policy_catalog(
 
 
 def _ordered_unique(values: list[PolicyEntity]) -> tuple[PolicyEntity, ...]:
+    """Deduplicate one film's entities by ID and return stable identity order."""
     return tuple(
         sorted(
             {value.id: value for value in values}.values(), key=lambda value: value.id

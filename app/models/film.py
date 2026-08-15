@@ -1,11 +1,13 @@
-from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.orm import relationship
-from sqlalchemy import Integer, String, Text, Float
+"""Defines film metadata, catalog aggregates, and ORM relationships."""
+
+from sqlalchemy import Float, Integer, String, Text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.core.database import Base
 
 
 class Film(Base):
-    """Films table"""
+    """Canonical catalog film resolved by slug and enriched with normalized metadata."""
     __tablename__ = "films"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -58,4 +60,4 @@ class Film(Base):
     avg_rating: Mapped[float | None] = mapped_column(Float, nullable=True)
     total_logs: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    logs: Mapped[list["Log"]] = relationship(back_populates="film", lazy="selectin") 
+    logs: Mapped[list["Log"]] = relationship(back_populates="film", lazy="selectin")

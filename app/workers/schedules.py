@@ -1,4 +1,9 @@
-"""Central UTC Celery Beat schedule for low-frequency maintenance."""
+"""Define the single-scheduler UTC cadence for backend maintenance.
+
+Film queue processing and retraining evaluation run weekly. Aggregate catalog fields
+refresh in January and July; distributed task locks make duplicate Beat delivery a
+safe skip, but production must still operate exactly one scheduler instance.
+"""
 
 from celery.schedules import crontab
 

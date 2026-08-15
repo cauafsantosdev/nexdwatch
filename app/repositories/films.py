@@ -22,7 +22,12 @@ class CatalogFilm:
 
 
 class FilmRepository:
-    """Read film metadata required by recommendation inference."""
+    """Read film metadata for recommendation display and export resolution.
+
+    The repository is read-only and owns no transaction. Callers retain ordering
+    responsibility because SQL ``IN`` predicates do not preserve requested identity
+    order.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -53,6 +58,13 @@ class FilmRepository:
 
         Year filtering keeps the candidate set bounded while title matching is
         completed in Python so internal whitespace can be normalized exactly.
+
+        Args:
+            years: Concrete release years and/or ``None`` for unknown-year rows.
+
+        Returns:
+            list[CatalogFilm]: Lightweight candidates in unspecified database order;
+                no title disambiguation has yet been applied.
         """
         if not years:
             return []

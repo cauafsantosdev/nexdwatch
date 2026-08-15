@@ -1,3 +1,5 @@
+"""Loads validated environment settings for API, workers, and model lifecycle."""
+
 from functools import lru_cache
 from pathlib import Path
 
@@ -6,6 +8,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Validated process configuration shared by every NexdWatch component."""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=True,
@@ -24,6 +28,7 @@ class Settings(BaseSettings):
 
     @property
     def DATABASE_URL(self) -> str:
+        """Build the async SQLAlchemy URL from authoritative PostgreSQL settings."""
         return f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
     SECRET_KEY: str
@@ -57,6 +62,8 @@ class Settings(BaseSettings):
     RETRIEVAL_TOP_K: int = 500
     MIN_PROFILE_FILMS: int = 5
 
+    # Observable lifecycle triggers; these are operational policy, not learned
+    # hyperparameters, and a forced rebuild remains available to operators.
     NEW_ELIGIBLE_USERS_THRESHOLD: int = Field(default=100, ge=1)
     NEW_MODEL_FILMS_THRESHOLD: int = Field(default=250, ge=1)
     MAX_MODEL_AGE_DAYS: int = Field(default=180, ge=1)
@@ -88,4 +95,5 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """Return the process-wide cached settings instance."""
     return Settings()

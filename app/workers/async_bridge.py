@@ -12,7 +12,12 @@ T = TypeVar("T")
 
 
 class WorkerAsyncBridge:
-    """Reuse one asyncio.Runner for the lifetime of a Celery worker process."""
+    """Own one asyncio runner for the lifetime of each Celery worker process.
+
+    Celery task bodies remain synchronous while reusing async SQLAlchemy resources on
+    one stable event loop. Fork lifecycle signals create the runner in the child and
+    dispose database connections before the loop closes.
+    """
 
     def __init__(self) -> None:
         self._runner: asyncio.Runner | None = None
@@ -23,14 +28,21 @@ class WorkerAsyncBridge:
             self._runner = asyncio.Runner()
 
     def run(self, coroutine: Coroutine[Any, Any, T]) -> T:
-        """Run an async service operation on the persistent worker loop."""
+        """Run one async service operation on the persistent worker loop.
+
+        Returns:
+            T: The coroutine result; exceptions propagate to the Celery task boundary.
+        """
         self.start()
         if self._runner is None:  # pragma: no cover - defensive type narrowing
             raise RuntimeError("worker async runner is unavailable")
         return self._runner.run(coroutine)
 
     def close(self) -> None:
-        """Dispose async database connections and close the worker loop."""
+        """Dispose async database connections before closing the worker loop.
+
+        Shutdown is idempotent so Celery signal ordering cannot close the runner twice.
+        """
         if self._runner is None:
             return
         self._runner.run(engine.dispose())

@@ -1,10 +1,13 @@
+"""Defines the persisted language entity and its film relationship."""
+
 from sqlalchemy import Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.core.database import Base
 
 
 class Language(Base):
-    """Film Languages table"""
+    """Normalized film-language identity used by cultural preference policy."""
     __tablename__ = "languages"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

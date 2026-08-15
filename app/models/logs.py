@@ -1,3 +1,5 @@
+"""Defines resolved user-film interactions used by serving and training."""
+
 from sqlalchemy import Float, ForeignKey, Integer, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 

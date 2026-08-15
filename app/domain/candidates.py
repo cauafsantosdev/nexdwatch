@@ -23,7 +23,7 @@ class RecommendationCandidate:
 
 @dataclass(frozen=True, slots=True)
 class CandidateGenerationResult:
-    """Variable-size broad candidate inventory for a future ranker."""
+    """Variable-size broad candidate inventory consumed by production RRF policy."""
 
     user_id: int
     candidates: tuple[RecommendationCandidate, ...]
@@ -34,4 +34,5 @@ class CandidateGenerationResult:
 
     @property
     def unique_candidate_count(self) -> int:
+        """Return the deduplicated union size, which may be below its budget."""
         return len(self.candidates)

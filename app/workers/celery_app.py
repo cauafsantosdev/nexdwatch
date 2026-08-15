@@ -1,4 +1,10 @@
-"""Celery application for durable profile and maintenance workloads."""
+"""Configure durable Celery routing for profile and maintenance workloads.
+
+Profile synchronization and low-frequency maintenance use separate queues so model
+training cannot starve user-facing ingestion. Late acknowledgement, worker-loss
+rejection, one-message prefetch, and broker visibility timeout preserve redelivery;
+application-owned Redis metadata remains the public task-state authority.
+"""
 
 from celery import Celery
 

@@ -25,7 +25,11 @@ class RecommendationHistory:
 
 
 class InteractionRepository:
-    """Read interactions used by the current SVD baseline."""
+    """Read watched and explicitly rated interaction universes for inference.
+
+    The repository owns no transaction and never commits; callers provide a session
+    whose snapshot is shared across the required recommendation orchestration.
+    """
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -65,7 +69,11 @@ class InteractionRepository:
         return list(result.scalars().all())
 
     async def get_rated_interactions(self, user_id: int) -> list[RatedInteraction]:
-        """Return rated interactions used to build personalized candidate profiles."""
+        """Return explicit ratings used to build personalized candidate profiles.
+
+        Unrated watches are excluded, values are normalized to primitive numeric
+        domain records, and database row order is preserved without a ranking claim.
+        """
         result = await self._session.execute(
             select(Log.film_id, Log.rating).where(
                 Log.user_id == user_id,
@@ -78,7 +86,11 @@ class InteractionRepository:
         ]
 
     async def get_recommendation_history(self, user_id: int) -> RecommendationHistory:
-        """Load watched and rated history together without duplicate SQL reads."""
+        """Load watched exclusion and explicit ratings from one SQL result.
+
+        The method does not distinguish an unknown user from an existing empty user;
+        callers needing that boundary use ``get_existing_user_recommendation_history``.
+        """
         result = await self._session.execute(
             select(Log.film_id, Log.rating).where(Log.user_id == user_id)
         )
@@ -94,7 +106,12 @@ class InteractionRepository:
     async def get_existing_user_recommendation_history(
         self, user_id: int
     ) -> RecommendationHistory | None:
-        """Load one user's history and distinguish an empty profile from no user."""
+        """Load one user's history while distinguishing absence from empty history.
+
+        A user-to-log outer join returns ``None`` only when the user row does not
+        exist. Existing users with zero interactions receive empty watched/rated
+        tuples, allowing the API to preserve correct 404 semantics.
+        """
         result = await self._session.execute(
             select(User.id, Log.film_id, Log.rating)
             .outerjoin(Log, Log.user_id == User.id)

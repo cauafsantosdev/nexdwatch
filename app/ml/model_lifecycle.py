@@ -44,6 +44,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class BundleBuildResult:
+    """Completed immutable bundle and operational stage timings."""
+
     root: Path
     manifest: ModelManifest
     extraction_seconds: float
@@ -57,12 +59,20 @@ class BundleBuildResult:
 
 @dataclass(frozen=True, slots=True)
 class RetrainingRunResult:
+    """Retraining decision plus optional build and atomic promotion results."""
+
     decision: RetrainingDecision
     build: BundleBuildResult | None
     promotion: PromotionResult | None
 
 
 def _trained_state(artifact_root: str | Path) -> TrainedModelStatistics | None:
+    """Resolve comparable training state from a versioned or legacy-flat model.
+
+    Versioned manifests provide exact cohort counters and model identities. A valid
+    legacy-flat layout can provide only file age and film IDs, so unknown counters
+    are marked ``-1`` to trigger the explicit legacy-bootstrap retraining reason.
+    """
     location = resolve_serving_model(artifact_root, validate=False)
     if location.versioned:
         bundle = validate_model_bundle(location.root)
@@ -100,7 +110,16 @@ def decide_retraining(
     now: datetime | None = None,
     settings: Settings | None = None,
 ) -> RetrainingDecision:
-    """Apply centralized operational thresholds to precise training universes."""
+    """Apply centralized retraining thresholds to measured and trained universes.
+
+    User growth, newly model-eligible film IDs, and model age are evaluated against
+    frozen settings. Legacy-flat models deliberately bypass ordinary thresholds and
+    bootstrap once because they do not carry exact historical counters.
+
+    Returns:
+        RetrainingDecision: Trigger decision, ordered reasons, comparable states, and
+            computed deltas used by operations.
+    """
     effective = settings or get_settings()
     reference_time = (now or datetime.now(UTC)).astimezone(UTC)
     if trained is None:
@@ -123,6 +142,8 @@ def decide_retraining(
         age_days = max(
             0.0, (reference_time - trained.trained_at).total_seconds() / 86400
         )
+    # Legacy state cannot support trustworthy user/interaction deltas; force one
+    # versioned build rather than interpreting unknown counters as real values.
     reasons: list[RetrainingReason] = []
     if force:
         reasons.append(RetrainingReason.FORCED)
@@ -163,6 +184,16 @@ def evaluate_retraining(
     force: bool = False,
     settings: Settings | None = None,
 ) -> RetrainingDecision:
+    """Measure current PostgreSQL state and apply the frozen retraining policy.
+
+    Args:
+        artifact_root: Legacy/versioned artifact root to compare with PostgreSQL.
+        force: Add an unconditional operational retraining reason.
+        settings: Optional thresholds and connection settings override.
+
+    Returns:
+        RetrainingDecision: Current-versus-trained deltas and trigger reasons.
+    """
     effective = settings or get_settings()
     root = Path(artifact_root or effective.ARTIFACT_ROOT)
     current = measure_production_training_data(settings=effective)
@@ -189,7 +220,25 @@ def build_model_bundle(
     model_version: str | None = None,
     now: datetime | None = None,
 ) -> BundleBuildResult:
-    """Build and validate a new directory without touching the current pointer."""
+    """Build and validate a new directory without touching the current pointer.
+
+    Partial output is confined to ``.building-*``. Any failure removes only the
+    candidate, leaving the authoritative pointer and running API unchanged.
+
+    Args:
+        data: One coherent PostgreSQL snapshot shared by all artifact builders.
+        artifact_root: Parent artifact root containing immutable version directories.
+        model_version: Optional prevalidated identity override for deterministic tests.
+        now: Optional UTC-compatible training timestamp override.
+
+    Returns:
+        BundleBuildResult: Validated immutable bundle, manifest, and stage timings.
+
+    Raises:
+        FileExistsError: If temporary or final output already uses the version ID.
+        Exception: Propagates training, artifact, manifest, rename, or validation
+            failures after removing only this candidate bundle.
+    """
     started = time.perf_counter()
     trained_at = (now or datetime.now(UTC)).astimezone(UTC)
     version_id = model_version or new_model_version(trained_at)
@@ -199,7 +248,11 @@ def build_model_bundle(
     final = models / version_id
     if temporary.exists() or final.exists():
         raise FileExistsError(f"model version already exists: {version_id}")
+    # A candidate is never visible through current.json while any payload, manifest,
+    # checksum, or cross-artifact validation remains incomplete.
     temporary.mkdir()
+    # Build SVD/FAISS and popularity from the same prepared snapshot before creating
+    # a checksum manifest that covers every serving payload.
     try:
         svd_result = train_prepared_svd(data, temporary)
         popularity_started = time.perf_counter()
@@ -216,11 +269,15 @@ def build_model_bundle(
             film_count=data.statistics.model_film_count,
         )
         write_manifest(manifest, temporary / MANIFEST_FILENAME)
+        # Rename the complete candidate to its immutable version name, then perform a
+        # full cross-artifact read before promotion can select it.
         temporary.rename(final)
         validation_started = time.perf_counter()
         validate_model_bundle(final)
         validation_seconds = time.perf_counter() - validation_started
     except Exception:
+        # Candidate cleanup never reads or mutates current.json, preserving the old
+        # serving version through every build/validation failure.
         if temporary.exists():
             shutil.rmtree(temporary)
         if final.exists():
@@ -262,7 +319,21 @@ def retrain_and_promote(
     force: bool = False,
     settings: Settings | None = None,
 ) -> RetrainingRunResult:
-    """Evaluate, build, validate, promote, and retain with old-current safety."""
+    """Evaluate, build, atomically promote, and retain with old-current safety.
+
+    A cheap aggregate evaluation avoids unnecessary extraction. Eligible runs then
+    load one coherent snapshot and re-evaluate to close the measurement/build gap.
+    Only a fully validated immutable bundle replaces ``current.json``; retention runs
+    afterward and always preserves the selected model.
+
+    Returns:
+        RetrainingRunResult: Final decision and optional build/promotion details.
+
+    Raises:
+        Exception: Propagates extraction, training, validation, promotion, or
+            retention failures without intentionally changing a valid current model
+            before atomic promotion.
+    """
     effective = settings or get_settings()
     root = Path(artifact_root or effective.ARTIFACT_ROOT)
     initial_decision = evaluate_retraining(
@@ -270,6 +341,8 @@ def retrain_and_promote(
     )
     if not initial_decision.should_retrain:
         return RetrainingRunResult(initial_decision, None, None)
+    # Re-evaluate against the exact materialized training snapshot so a threshold
+    # that changed between measurement and extraction cannot build needlessly.
     snapshot = load_production_training_data(settings=effective)
     decision = decide_retraining(
         snapshot.statistics,
@@ -279,6 +352,8 @@ def retrain_and_promote(
     )
     if not decision.should_retrain:
         return RetrainingRunResult(decision, None, None)
+    # Promotion occurs only after bundle-level checksums and cross-artifact identity
+    # validation succeed; retention cannot remove the newly current version.
     build = build_model_bundle(snapshot, artifact_root=root)
     promotion = promote_model_bundle(root, build.manifest.model_version)
     apply_model_retention(root, keep_previous=effective.MODEL_RETENTION_PREVIOUS)

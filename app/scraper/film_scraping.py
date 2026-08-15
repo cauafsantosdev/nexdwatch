@@ -1,4 +1,9 @@
-"""Film metadata scraping with explicit per-slug outcomes."""
+"""Scrape Letterboxd film metadata with explicit per-slug outcomes.
+
+The adapter normalizes ``letterboxdpy`` payloads into the queue persistence
+contract. One malformed or unavailable film is returned as ``FAILED`` without
+preventing unrelated slugs in the same batch from producing results.
+"""
 
 import logging
 from collections.abc import Iterable, Mapping
@@ -35,7 +40,11 @@ def _deduplicated_names(
     *,
     item_type: str | None = None,
 ) -> list[str]:
-    """Extract unique names in source order from letterboxdpy metadata."""
+    """Extract unique names in source order from heterogeneous metadata.
+
+    Mapping entries may be filtered by their Letterboxd relationship ``type``;
+    scalar names are accepted only when no such filter is requested.
+    """
     names: list[str] = []
     seen: set[str] = set()
     for item in items or ():
@@ -59,7 +68,12 @@ def _deduplicated_names(
 
 
 def _rating_count(movie: Movie) -> int:
-    """Return JSON-LD aggregate rating count used by the existing threshold."""
+    """Read the JSON-LD rating count that drives the ingestion threshold.
+
+    Raises:
+        TypeError: If the movie profile lacks structured aggregate metadata.
+        ValueError: If the count is absent, boolean, or negative.
+    """
     profile = getattr(getattr(movie, "pages", None), "profile", None)
     script = getattr(profile, "script", None)
     if not isinstance(script, Mapping):
@@ -79,7 +93,11 @@ def _rating_count(movie: Movie) -> int:
 
 
 def _tmdb_id(movie: Movie) -> int:
-    """Normalize the external TMDB identifier for persistence."""
+    """Normalize the required external TMDB identity for persistence.
+
+    Raises:
+        ValueError: If the identifier is absent or boolean.
+    """
     raw_tmdb_id = movie.tmdb_id
     if raw_tmdb_id is None or isinstance(raw_tmdb_id, bool):
         raise ValueError("TMDB identifier is unavailable")
@@ -87,7 +105,14 @@ def _tmdb_id(movie: Movie) -> int:
 
 
 def _metadata(movie: Movie, slug: str, total_logs: int) -> dict[str, Any]:
-    """Normalize letterboxdpy movie data into the ingestion contract."""
+    """Normalize one movie payload into the queue persistence contract.
+
+    Relationship collections are deduplicated without losing source order and the
+    display title becomes the original-title fallback when Letterboxd omits one.
+
+    Raises:
+        ValueError: If required title or TMDB identity metadata is unavailable.
+    """
     title = movie.title.strip() if isinstance(movie.title, str) else ""
     if not title:
         raise ValueError("movie title is unavailable")
@@ -121,18 +146,24 @@ def _metadata(movie: Movie, slug: str, total_logs: int) -> dict[str, Any]:
 
 
 def scrape_film_queue(film_slugs: list[str]) -> list[FilmScrapeResult]:
-    """Scrape metadata while returning an outcome for every requested slug.
+    """Scrape metadata while isolating the outcome of every requested slug.
+
+    Films below the established 1,000-rating threshold are classified as
+    ``FILTERED``. All exceptions are converted to product-safe ``FAILED`` outcomes,
+    allowing the queue loader to persist terminal state per film.
 
     Args:
         film_slugs: Letterboxd film slugs to scrape.
 
     Returns:
-        Results in the same order as the requested slugs.
+        list[FilmScrapeResult]: Exactly one result per input slug, in input order.
     """
     results: list[FilmScrapeResult] = []
 
     for slug in film_slugs:
         try:
+            # Apply the catalog-size gate before normalizing full metadata so small
+            # films never enter the recommendation catalog accidentally.
             movie = Movie(slug)
             total_logs = _rating_count(movie)
             if total_logs < MINIMUM_TOTAL_LOGS:
@@ -148,6 +179,8 @@ def scrape_film_queue(film_slugs: list[str]) -> list[FilmScrapeResult]:
                 )
                 continue
 
+            # Successful payloads satisfy all fields required by persistence; any
+            # normalization error remains isolated to this slug.
             results.append(
                 FilmScrapeResult(
                     slug=slug,

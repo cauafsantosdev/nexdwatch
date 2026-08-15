@@ -1,4 +1,4 @@
-"""Offline Letterboxd export route."""
+"""Expose bounded offline Letterboxd ZIP ingestion as a synchronous fallback."""
 
 import logging
 from typing import Annotated
@@ -23,7 +23,13 @@ async def import_letterboxd_export(
     file: Annotated[UploadFile, File(description="Official Letterboxd export ZIP")],
     service: Annotated[LetterboxdImportService, Depends(get_letterboxd_import_service)],
 ) -> LetterboxdImportResponse:
-    """Import watched films from an official Letterboxd export ZIP."""
+    """Import an official export and return resolution-safe aggregate results.
+
+    The upload is read once and delegated to the archive/service boundaries. Invalid
+    archives return 400, valid exports with no resolvable catalog films return 422,
+    and unexpected persistence failures return a sanitized 500. The upload handle is
+    closed for every outcome.
+    """
     normalized_username = username.strip()
     if not normalized_username:
         raise HTTPException(
@@ -31,6 +37,8 @@ async def import_letterboxd_export(
             detail="Username cannot be blank.",
         )
 
+    # Read and validate the complete bounded archive before opening service-owned
+    # database work; parser limits constrain the in-memory request body.
     try:
         archive = await file.read()
         result = await service.import_export(normalized_username, archive)
@@ -55,6 +63,8 @@ async def import_letterboxd_export(
     finally:
         await file.close()
 
+    # Expose only a bounded unresolved sample; internal matching diagnostics and the
+    # complete unresolved inventory remain outside the public response.
     return LetterboxdImportResponse(
         user_id=result.user_id,
         watched_in_export=result.watched_in_export,

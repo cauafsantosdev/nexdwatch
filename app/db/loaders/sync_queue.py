@@ -1,4 +1,9 @@
-"""Process queued films with isolated, observable outcomes."""
+"""Resolve queued film slugs and promote their dependent pending interactions.
+
+The scraper runs once per bounded batch, while persistence runs in a separate
+transaction per film. A batch-level scrape failure leaves every item pending for a
+Celery retry; malformed or failed individual films become terminal independently.
+"""
 
 import asyncio
 import logging
@@ -48,6 +53,7 @@ RELATION_MAP: tuple[tuple[RelationModel, str, str], ...] = (
 
 
 def _relation_names(value: Any) -> set[str]:
+    """Normalize scalar or iterable relationship metadata to unique names."""
     if value is None:
         return set()
     values: Iterable[Any] = [value] if isinstance(value, str) else value
@@ -60,6 +66,7 @@ async def _get_pending_slugs(
     session_factory: async_sessionmaker[AsyncSession],
     batch_size: int = 100,
 ) -> list[str]:
+    """Select the oldest pending slugs up to the bounded maintenance batch size."""
     async with session_factory() as session:
         queue_result = await session.execute(
             select(FilmQueue.film_slug)
@@ -75,6 +82,7 @@ async def _get_or_create_relation(
     model: RelationModel,
     name: str,
 ) -> Any:
+    """Reuse a named relation or stage a new entity in the caller's transaction."""
     existing = await session.scalar(select(model).where(model.name == name))
     if existing is not None:
         return existing
@@ -89,11 +97,27 @@ async def _mark_terminal(
     status: Status,
     reason: str | None,
 ) -> None:
+    """Atomically finish a queue item and all unresolved dependent logs.
+
+    Args:
+        session_factory: Factory used to own the isolated terminal transaction.
+        slug: Queue identity shared by the film and pending interactions.
+        status: ``FILTERED`` or ``FAILED`` terminal outcome.
+        reason: Operational failure/filter explanation retained on the queue row.
+
+    Returns:
+        None: Queue and pending-log state is committed directly to PostgreSQL.
+
+    Raises:
+        ValueError: If asked to apply a non-terminal status.
+    """
     if status not in {Status.FILTERED, Status.FAILED}:
         raise ValueError(f"status is not terminal: {status}")
 
     async with session_factory() as session:  # noqa: SIM117
         async with session.begin():
+            # Queue and dependent rows transition together so clients never observe
+            # a terminal film with retryable pending interactions.
             queue_item = await session.scalar(
                 select(FilmQueue).where(FilmQueue.film_slug == slug)
             )
@@ -116,6 +140,12 @@ async def _mark_terminal(
 
 
 async def _attach_pending_logs(session: AsyncSession, film: Film) -> None:
+    """Promote pending username/slug ratings after a film becomes available.
+
+    Existing user/film logs are preserved, missing users make only their pending
+    row fail, and every other resolvable row becomes ``PROCESSED`` in the caller's
+    transaction.
+    """
     pending_result = await session.execute(
         select(LogPending).where(
             LogPending.status == Status.PENDING,
@@ -126,6 +156,8 @@ async def _attach_pending_logs(session: AsyncSession, film: Film) -> None:
     if not pending_logs:
         return
 
+    # Resolve users and existing film interactions in sets before mutating rows;
+    # this avoids duplicate Logs when multiple pending records share a username.
     usernames = {pending.username for pending in pending_logs}
     users_result = await session.execute(
         select(User.username, User.id).where(User.username.in_(usernames))
@@ -156,12 +188,24 @@ async def _persist_success(
     session_factory: async_sessionmaker[AsyncSession],
     result: FilmScrapeResult,
 ) -> None:
+    """Persist one successful scrape and unblock its logs atomically.
+
+    The film and normalized relationship entities are created only if the catalog
+    does not already contain the slug. Pending logs are then promoted and the queue
+    item becomes ``PROCESSED`` in the same isolated transaction.
+
+    Raises:
+        ValueError: If a success outcome contains no film metadata.
+        LookupError: If the selected queue entry disappeared before persistence.
+    """
     metadata = result.metadata
     if metadata is None:
         raise ValueError("successful scrape result has no metadata")
 
     async with session_factory() as session:  # noqa: SIM117
         async with session.begin():
+            # Re-read queue and catalog state inside this film's transaction so one
+            # concurrent or malformed item cannot affect unrelated batch members.
             queue_item = await session.scalar(
                 select(FilmQueue).where(FilmQueue.film_slug == result.slug)
             )
@@ -208,6 +252,8 @@ async def _persist_success(
 
                 await session.flush()
 
+            # Only mark the queue processed after the film identity exists and all
+            # resolvable pending interactions have been attached.
             await _attach_pending_logs(session, film)
             queue_item.attempts += 1
             queue_item.status = Status.PROCESSED
@@ -223,14 +269,29 @@ async def sync_film_queue(
     scraper: Callable[[list[str]], list[FilmScrapeResult]] = scrape_film_queue,
     batch_size: int = 100,
 ) -> FilmQueueRunResult:
-    """Process each pending queue item in an isolated transaction.
+    """Scrape a bounded pending batch and persist each outcome independently.
+
+    A failure of the blocking batch scraper is propagated with all selected rows
+    still pending. Once results exist, missing/filtered/failed outcomes transition
+    only their own queue and pending rows; a successful result gets its own catalog
+    transaction so later failures cannot roll it back.
 
     Args:
         session_factory: Async database session factory.
-        scraper: Blocking batch film scraper.
+        scraper: Blocking batch film scraper, executed outside the event loop.
+        batch_size: Maximum oldest pending entries selected for this run.
+
+    Returns:
+        FilmQueueRunResult: Selected and terminal outcome counts plus wall duration.
+
+    Raises:
+        ValueError: If ``batch_size`` is not positive.
+        Exception: Propagates a batch scraper failure so Celery can retry without
+            terminally changing any selected row.
     """
     if batch_size <= 0:
         raise ValueError("film queue batch size must be positive")
+    # Freeze the oldest pending work before crossing the blocking scraper boundary.
     started = time.perf_counter()
     film_slugs = await _get_pending_slugs(session_factory, batch_size=batch_size)
     pending_count = len(film_slugs)
@@ -245,6 +306,8 @@ async def sync_film_queue(
         # transient batch failure without turning the whole batch terminal.
         raise
 
+    # Classify and persist in original queue order. Each helper owns its transaction,
+    # preserving already completed films when another film fails persistence.
     results_by_slug = {result.slug: result for result in scrape_results}
     success_count = 0
     filtered_count = 0

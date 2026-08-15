@@ -1,6 +1,8 @@
-from sqlalchemy import Table, Column, Integer, ForeignKey
-from app.core.database import Base
+"""Defines normalized many-to-many associations between films and metadata."""
 
+from sqlalchemy import Column, ForeignKey, Integer, Table
+
+from app.core.database import Base
 
 film_directors = Table(
     "film_directors",

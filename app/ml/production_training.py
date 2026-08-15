@@ -26,12 +26,16 @@ from app.ml.popularity import (
 )
 
 logger = logging.getLogger(__name__)
+# Frozen model shape and snapshot identity; these are compatibility semantics rather
+# than parameters tuned by scheduled retraining.
 SVD_DIMENSION = 32
 TRAINING_SEMANTICS = "postgres-rated-deduplicated-user-film-svd32-v1"
 
 
 @dataclass(frozen=True, slots=True)
 class PreparedProductionTrainingData:
+    """One deduplicated PostgreSQL snapshot shared by SVD and popularity builders."""
+
     interactions: pd.DataFrame
     statistics: TrainingStatistics
     extraction_seconds: float
@@ -39,6 +43,8 @@ class PreparedProductionTrainingData:
 
 @dataclass(frozen=True, slots=True)
 class SVDTrainingResult:
+    """Validated artifact-build result with stage timings for operations."""
+
     index: FaissIndexBuildResult
     training_seconds: float
     artifact_write_seconds: float
@@ -56,10 +62,28 @@ def _sync_database_url(settings: Settings) -> str:
 def load_production_training_data(
     *, settings: Settings | None = None
 ) -> PreparedProductionTrainingData:
-    """Read and deduplicate the exact production rated-interaction universe once."""
+    """Read and deduplicate the production rated-interaction universe once.
+
+    The returned frame is the sole input for both SVD and popularity construction,
+    preventing the two production sources from observing different snapshots. The
+    first row in database ID order wins duplicate user/film pairs.
+
+    Args:
+        settings: Optional database settings override for commands and tests.
+
+    Returns:
+        PreparedProductionTrainingData: Deduplicated rated frame, measured cohort
+            statistics, and extraction duration.
+
+    Raises:
+        ValueError: If no rated rows exist or ratings are non-finite.
+        Exception: Propagates database and strict numeric conversion failures.
+    """
     effective_settings = settings or get_settings()
     engine = create_engine(_sync_database_url(effective_settings))
     started = time.perf_counter()
+    # Extract one ordered interaction universe, then dispose the synchronous engine
+    # before CPU-bound training or artifact I/O begins.
     try:
         frame = pd.read_sql(
             "SELECT user_id, film_id, rating FROM logs "
@@ -68,6 +92,8 @@ def load_production_training_data(
         )
     finally:
         engine.dispose()
+    # Deterministic SQL ordering gives the established first-row-wins deduplication a
+    # stable meaning for both SVD and popularity.
     frame = frame.drop_duplicates(subset=["user_id", "film_id"], keep="first")
     if frame.empty:
         raise ValueError("production training data contains no rated interactions")
@@ -98,7 +124,14 @@ def load_production_training_data(
 def measure_production_training_data(
     *, settings: Settings | None = None
 ) -> TrainingStatistics:
-    """Measure retraining inputs without materializing ratings or ORM entities."""
+    """Measure retraining inputs without materializing ratings or ORM entities.
+
+    The aggregate query uses the same distinct user/film rated universe as training
+    and returns exact film identities needed to detect newly model-eligible films.
+
+    Returns:
+        TrainingStatistics: Current user, interaction, and sorted film-ID universe.
+    """
     effective_settings = settings or get_settings()
     engine = create_engine(_sync_database_url(effective_settings))
     query = """
@@ -134,7 +167,21 @@ def measure_production_training_data(
 def train_prepared_svd(
     data: PreparedProductionTrainingData, output_dir: str | Path
 ) -> SVDTrainingResult:
-    """Train the frozen 32-dimensional SVD and exact FAISS artifacts."""
+    """Train the frozen 32-dimensional SVD and exact FAISS artifacts.
+
+    Writes normalized vectors, actual film IDs, and ``IndexIDMap2(IndexFlatIP)``
+    into the caller-provided isolated bundle directory. Publication and cleanup are
+    intentionally owned by the higher-level bundle lifecycle.
+
+    Returns:
+        SVDTrainingResult: Exact-index metadata and separately measured CPU/write/
+            FAISS stage durations.
+
+    Raises:
+        Exception: Propagates matrix, SVD, filesystem, and FAISS validation failures.
+    """
+    # Pivot the one prepared snapshot and preserve actual Film.id column order for
+    # the JSON map and ID-mapped FAISS labels.
     started = time.perf_counter()
     matrix = data.interactions.pivot(
         index="user_id", columns="film_id", values="rating"
@@ -145,6 +192,8 @@ def train_prepared_svd(
     item_vectors = normalize(svd.components_.T, axis=1)
     training_seconds = time.perf_counter() - started
 
+    # Write NumPy and identity artifacts into the caller's isolated candidate bundle;
+    # no serving pointer references this directory during construction.
     write_started = time.perf_counter()
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
@@ -167,7 +216,15 @@ def train_prepared_svd(
 def build_production_popularity_artifact(
     data: PreparedProductionTrainingData,
 ) -> PopularityArtifact:
-    """Build frozen-formula popularity from the same production snapshot as SVD."""
+    """Build deterministic production popularity from the shared SVD snapshot.
+
+    Ratings at least 3.5 count positively. Actual ``Film.id`` is the secondary sort
+    key so equal-count ordering remains stable across processes and retrains.
+
+    Returns:
+        PopularityArtifact: Validated full-model ordering derived from the exact same
+            deduplicated frame used by SVD.
+    """
     counts = (
         data.interactions.loc[
             data.interactions["rating"] >= POPULARITY_RATING_THRESHOLD

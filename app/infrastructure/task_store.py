@@ -51,7 +51,12 @@ def fresh_key(username: str) -> str:
 
 
 class AsyncRedisTaskStore:
-    """Non-blocking Redis task store used by FastAPI services."""
+    """Lifespan-owned non-blocking Redis task store used by FastAPI services.
+
+    Task JSON has a long result TTL, active username ownership has a shorter crash-
+    recovery TTL, and successful freshness markers have an independent reuse window.
+    Lua scripts keep metadata creation and conditional ownership changes atomic.
+    """
 
     def __init__(
         self,
@@ -82,7 +87,12 @@ class AsyncRedisTaskStore:
         )
 
     async def create_queued_if_inactive(self, task: TaskMetadata) -> bool:
-        """Atomically acquire the username lock and write queued metadata."""
+        """Atomically acquire username ownership and write queued task metadata.
+
+        Returns:
+            bool: ``True`` only when no active owner existed and both TTL-backed keys
+                were created by this call.
+        """
         created = await self._client.eval(
             _CREATE_TASK_SCRIPT,
             2,
@@ -127,7 +137,12 @@ class AsyncRedisTaskStore:
 
 
 class SyncRedisTaskStore:
-    """Synchronous Redis task store used inside Celery workers."""
+    """Invocation-owned synchronous Redis task store used by Celery workers.
+
+    Workers update the same application-owned JSON as FastAPI without consulting a
+    Celery result backend. Ownership claims refresh only the matching task ID or take
+    over a key whose TTL already expired after a crash.
+    """
 
     def __init__(
         self,
@@ -163,7 +178,11 @@ class SyncRedisTaskStore:
         return bool(deleted)
 
     def claim_active(self, username: str, task_id: str) -> bool:
-        """Acquire an expired lock or refresh it only for the same owner."""
+        """Acquire absent ownership or refresh it only for the same task owner.
+
+        Returns:
+            bool: ``True`` when this task now owns the username for a full active TTL.
+        """
         claimed = self._client.eval(
             _CLAIM_ACTIVE_SCRIPT,
             1,

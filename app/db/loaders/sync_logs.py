@@ -1,4 +1,9 @@
-"""Persist scraped profile interactions and catalog queue entries."""
+"""Reconcile scraped profile interactions with the local film catalog.
+
+Known films become ``Log`` rows immediately. Unknown slugs are represented by a
+deduplicated ``FilmQueue`` entry and username-scoped ``LogPending`` rows so catalog
+acquisition can finish asynchronously without losing ratings.
+"""
 
 import logging
 from collections.abc import Mapping, Sequence
@@ -21,6 +26,11 @@ class InconsistentIngestionStateError(RuntimeError):
 def _normalize_profile(
     profile_or_logs: ScrapedProfile | Sequence[Mapping[str, Any]],
 ) -> ScrapedProfile | None:
+    """Convert the typed or legacy scraper payload into one usable profile.
+
+    Invalid legacy rows are discarded locally; an absent username or empty input
+    yields ``None`` and makes synchronization a no-op.
+    """
     if isinstance(profile_or_logs, ScrapedProfile):
         return profile_or_logs
     if not profile_or_logs:
@@ -50,21 +60,34 @@ async def sync_user_logs(
     *,
     session_factory: async_sessionmaker[AsyncSession] = SessionLocal,
 ) -> None:
-    """Persist profile interactions without duplicating known records.
+    """Reconcile one complete scraped profile in a single transaction.
 
-    Existing catalog films become interactions immediately. Unknown films are
-    queued and their interactions remain pending until film ingestion succeeds.
+    Existing ratings are updated in place and absent known-film ratings are
+    inserted. Unknown films reuse or create queue state and preserve their rating in
+    ``LogPending``. Repeated watches within one payload collapse by film identity,
+    making replay idempotent with respect to the persisted user/film pair.
 
     Args:
         profile_or_logs: Typed scraped profile or legacy list of log mappings.
         session_factory: Async database session factory.
+
+    Returns:
+        None: User, log, queue, and pending-log changes commit atomically.
+
+    Raises:
+        InconsistentIngestionStateError: If queue state claims a film was processed
+            although no catalog film exists, or contains an unsupported status.
+        Exception: Propagates database failures after rolling back the profile sync.
     """
+    # Normalize legacy scraper output before allocating a database transaction.
     profile = _normalize_profile(profile_or_logs)
     if profile is None:
         return
 
     async with session_factory() as session:
         async with session.begin():
+            # Load or create the user, then read each reconciliation universe once
+            # so known and unknown paths share one transaction snapshot.
             result_user = await session.execute(
                 select(User).where(User.username == profile.username)
             )
@@ -112,6 +135,8 @@ async def sync_user_logs(
 
                 film_id = film_ids_by_slug.get(slug)
                 if film_id is not None:
+                    # Known catalog films are authoritative: update/insert the Log
+                    # and retire any stale pending representation for the same slug.
                     existing_log = existing_logs_by_film_id.get(film_id)
                     if existing_log is not None:
                         if existing_log.rating != watch.rating:
@@ -134,6 +159,8 @@ async def sync_user_logs(
                     continue
 
                 queue_status = queue_status_by_slug.get(slug)
+                # Unknown films retain their interaction through queue-backed
+                # pending state until catalog ingestion reaches a terminal outcome.
                 if queue_status is None:
                     films_to_queue[slug] = {"film_slug": slug}
                     queue_status = Status.PENDING
@@ -179,6 +206,8 @@ async def sync_user_logs(
                 else:
                     pending_payload["rating"] = watch.rating
 
+            # Bulk writes occur only after the complete payload is reconciled, so a
+            # detected state inconsistency cannot leave a partial profile update.
             if films_to_queue:
                 await session.execute(insert(FilmQueue), list(films_to_queue.values()))
             if pending_to_insert:

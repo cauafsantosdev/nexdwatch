@@ -62,7 +62,27 @@ def load_historical_interactions(
     *,
     chunk_size: int = 250_000,
 ) -> PreparedInteractions:
-    """Read semicolon CSV interactions and resolve slugs without DB row queries."""
+    """Resolve a controlled historical CSV into compact per-user interactions.
+
+    The file is streamed in bounded pandas chunks. Slugs resolve through the supplied
+    in-memory catalog mapping, ratings become exact half-star buckets, and identical
+    user/film duplicates collapse after a deterministic sort. Conflicting duplicate
+    ratings fail the dataset rather than selecting an arbitrary row.
+
+    Args:
+        csv_path: Controlled semicolon-delimited interaction dataset.
+        slug_to_film_id: Complete unique mapping from dataset slug to model film ID.
+        chunk_size: Maximum rows parsed into memory per pandas chunk.
+
+    Returns:
+        PreparedInteractions: Sorted film vocabulary, compact user histories, and
+            resolution/deduplication counts.
+
+    Raises:
+        FileNotFoundError: If the controlled dataset path is absent.
+        ValueError: If mappings, schema, identities, ratings, duplicates, or the
+            resolved interaction universe are invalid.
+    """
     source = Path(csv_path)
     if not source.is_file():
         raise FileNotFoundError(f"controlled training dataset not found: {source}")
@@ -76,6 +96,8 @@ def load_historical_interactions(
     csv_rows = 0
     unresolved_rows = 0
 
+    # Stream the source and resolve category-coded slugs vectorially; no database or
+    # per-row lookup is permitted in this controlled-data boundary.
     try:
         chunks = pd.read_csv(
             source,
@@ -140,6 +162,7 @@ def load_historical_interactions(
     if not user_chunks:
         raise ValueError("controlled training dataset has no resolvable interactions")
 
+    # Sort by user/film so duplicates become adjacent and user slices are stable.
     user_ids = np.concatenate(user_chunks)
     film_ids = np.concatenate(film_chunks)
     rating_buckets = np.concatenate(rating_chunks)
@@ -159,6 +182,8 @@ def load_historical_interactions(
     film_ids = film_ids[keep]
     rating_buckets = rating_buckets[keep]
 
+    # Replace database identities with compact vector rows while retaining the exact
+    # sorted film-ID vocabulary required to translate model outputs later.
     vocabulary = np.unique(film_ids)
     item_rows = np.searchsorted(vocabulary, film_ids).astype(np.int64, copy=False)
     boundaries = np.flatnonzero(user_ids[1:] != user_ids[:-1]) + 1
@@ -194,10 +219,24 @@ def build_interaction_splits(
     negative_rating_threshold: float,
     seed: int,
 ) -> tuple[UserSplit, ...]:
-    """Build deterministic per-user train, validation, and test targets."""
+    """Build leakage-safe deterministic train, validation, and test partitions.
+
+    Users with at least three positive interactions contribute one validation and
+    one test target selected by a user-specific seeded permutation. Both held-out
+    positives are removed from profile context; explicit low-rating negatives remain
+    available for training/evaluation semantics.
+
+    Returns:
+        tuple[UserSplit, ...]: One split per prepared user in stable cohort order.
+
+    Raises:
+        ValueError: If either rating threshold is not a valid half-star value.
+    """
     positive_bucket = rating_to_bucket(positive_rating_threshold)
     negative_bucket = rating_to_bucket(negative_rating_threshold)
     splits: list[UserSplit] = []
+    # Derive a separate RNG stream from global seed and stable cohort identity so
+    # adding another user cannot perturb existing users' held-out targets.
     for user in data.users:
         positives = user.item_rows[user.rating_buckets >= positive_bucket]
         explicit_negatives = user.item_rows[user.rating_buckets <= negative_bucket]
@@ -240,6 +279,7 @@ def build_interaction_splits(
 
 
 def _ratings_to_buckets(ratings: NDArray[np.float64]) -> NDArray[np.int64]:
+    """Vectorize strict half-star validation for one historical CSV chunk."""
     if not np.isfinite(ratings).all():
         raise ValueError("ratings must be finite")
     doubled = ratings * 2
@@ -252,6 +292,7 @@ def _ratings_to_buckets(ratings: NDArray[np.float64]) -> NDArray[np.int64]:
 
 
 def _validate_film_mapping(slug_to_film_id: Mapping[str, int]) -> None:
+    """Require a non-empty one-to-one mapping to positive integer film IDs."""
     if not slug_to_film_id:
         raise ValueError("film slug mapping is empty")
     film_ids = list(slug_to_film_id.values())
@@ -264,5 +305,6 @@ def _validate_film_mapping(slug_to_film_id: Mapping[str, int]) -> None:
 
 
 def _rng(*values: int) -> np.random.Generator:
+    """Create a reproducible independent generator from stable integer components."""
     components = [int(value) & 0xFFFFFFFF for value in values]
     return np.random.default_rng(np.random.SeedSequence(components))

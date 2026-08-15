@@ -1,10 +1,13 @@
+"""Defines the persisted studio entity and its film relationship."""
+
 from sqlalchemy import Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.core.database import Base
 
 
 class Studio(Base):
-    """Film Studios table"""
+    """Normalized production-studio identity attached to catalog films."""
     __tablename__ = "studios"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

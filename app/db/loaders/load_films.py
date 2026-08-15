@@ -1,24 +1,43 @@
-import re
+"""Import the externally supplied historical film catalog into PostgreSQL.
+
+The loader resolves repeated relationship names through in-memory ORM caches and
+persists the complete CSV in one transaction. It is an administrative bootstrap
+path rather than the incremental ``FilmQueue`` ingestion workflow.
+"""
+
 import ast
-import typer
+import re
+
 import pandas as pd
+import typer
 from sqlalchemy import select
 from sqlalchemy.orm import Session as AsyncSession
 
-from app.models.film import Film
-from app.models.director import Director
-from app.models.actor import Actor
-from app.models.genre import Genre
-from app.models.country import Country
-from app.models.language import Language
-from app.models.theme import Theme
-from app.models.studio import Studio
 from app.core.database import SessionLocal
+from app.models.actor import Actor
+from app.models.country import Country
+from app.models.director import Director
+from app.models.film import Film
+from app.models.genre import Genre
+from app.models.language import Language
+from app.models.studio import Studio
+from app.models.theme import Theme
 
 
 def safe_convert(value, dtype):
-    """
-    Converts Pandas values safely
+    """Normalize one pandas cell to the requested scalar representation.
+
+    Missing values, blank strings, and conversion failures become ``None`` so a
+    malformed optional field does not abort the catalog bootstrap.
+
+    Args:
+        value: Raw value read from the CSV frame.
+        dtype: Target scalar type; integer conversion accepts numeric strings and
+            floating-point cells produced by pandas.
+
+    Returns:
+        The converted scalar, ``None`` for unusable values, or a string fallback
+        for target types outside the loader's explicit conversion set.
     """
     if pd.isna(value):
         return None
@@ -37,8 +56,17 @@ def safe_convert(value, dtype):
     return str(value)
 
 def parse_list(value):
-    """
-    Converts CSV fields to lists of strings safely.
+    """Parse one serialized relationship column into clean entity names.
+
+    Historical exports contain Python-list syntax plus inconsistently doubled
+    quotes. The parser repairs those known quoting artifacts, accepts only string
+    members, and treats any malformed representation as an empty relationship.
+
+    Args:
+        value: CSV cell containing a list, list-like string, or missing value.
+
+    Returns:
+        list[str]: Non-empty relationship names in source order.
     """
     if value is None:
         return []
@@ -65,11 +93,28 @@ def parse_list(value):
 
 
 async def load_films_data(csv_path):
-    """Loads a CSV of film details into the database"""
+    """Persist a historical film CSV and its normalized relationships.
+
+    The CSV is loaded into memory, existing relationship tables are cached once,
+    and every film plus newly encountered entity is written in a single database
+    transaction. An exception therefore rolls back the entire bootstrap import.
+
+    Args:
+        csv_path: Semicolon-delimited catalog export to import.
+
+    Returns:
+        None: Films and relationships are committed directly to PostgreSQL.
+
+    Raises:
+        Exception: Propagates CSV parsing, database, and integrity failures after
+            the enclosing transaction has rolled back.
+    """
     async with SessionLocal() as session:
+        # Parse before opening the transaction so file I/O does not extend the
+        # database write-lock window.
         df = pd.read_csv(csv_path, sep=";")
 
-        async with session.begin():             
+        async with session.begin():
             relation_map = [
                 (Director, "director", "directors"),
                 (Actor, "actors", "actors"),
@@ -80,40 +125,40 @@ async def load_films_data(csv_path):
                 (Theme, "themes", "themes"),
             ]
             
-            # Cache Dictionary: {Model: {Name: ORM Object}}
+            # Preload shared entities once; per-row relationship resolution must not
+            # degrade into a query for every director, actor, or genre.
             caches = {}
             typer.echo("  > Loading existing models from database...")
             
             for model, _, _ in relation_map:
-                # Selects all existent objects for this model in one query
                 result = await session.execute(select(model))
-                # Creates a cache for the model
                 caches[model] = {obj.name: obj for obj in result.scalars().all()}
             
             typer.echo("  > Loading finished.")
 
             def get_or_create(model, name, session: AsyncSession):
-                """Gets in cache or creates ORM object."""
+                """Reuse a transaction-local relationship entity or stage a new one."""
                 cache = caches[model]
 
                 if name in cache:
                     obj = cache[name]
                     return obj 
                 
-                # If it's a new object, it's created and added to session and cache
+                # Cache new entities immediately so duplicate names within the same
+                # import resolve to one ORM identity before the session is flushed.
                 obj = model(name=name)
                 session.add(obj)
                 cache[name] = obj
                 return obj
 
             for index, row in df.iterrows():
-
+                # Normalize scalar metadata while preserving the established title
+                # fallback for incomplete historical rows.
                 original_title_value = safe_convert(row["original_title"], str)                
                 # If original_title_value is None, uses 'title' as fallback
                 if original_title_value is None:
                     original_title_value = safe_convert(row["title"], str)
                 
-                # Creates Film object
                 film = Film(
                     tmdb_id=safe_convert(row["tmdb_id"], int),
                     slug=safe_convert(row["slug"], str),
@@ -128,7 +173,7 @@ async def load_films_data(csv_path):
                 )
                 session.add(film)
 
-                # Adds relationships using cache
+                # Attach deduplicated normalized entities from each list-like field.
                 for model, column, relation_list in relation_map:
                     items = parse_list(row[column])
                     unique_names = set(items)
@@ -137,6 +182,5 @@ async def load_films_data(csv_path):
                         obj = get_or_create(model, name, session)
                         getattr(film, relation_list).append(obj)
 
-                # Progress feedback
                 if (index + 1) % 1000 == 0:
                     typer.echo(f"  > Processed Films: {index + 1}/{len(df)}")

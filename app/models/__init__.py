@@ -1,3 +1,5 @@
+"""Exports the SQLAlchemy model graph and association tables."""
+
 from .actor import Actor
 from .country import Country
 from .director import Director

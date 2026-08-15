@@ -1,3 +1,5 @@
+"""Defines the durable database backlog for unknown film slugs."""
+
 from datetime import datetime
 
 from sqlalchemy import DateTime, Integer, String, Text, UniqueConstraint, func

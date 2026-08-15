@@ -29,7 +29,12 @@ class ProfileSyncResult:
 
 
 class ProfileService:
-    """Coordinate blocking profile scraping and asynchronous persistence."""
+    """Coordinate request-independent scraping and transactional profile ingestion.
+
+    Instances own no external resources themselves. A caller-provided async session
+    factory defines PostgreSQL transactions, while the blocking scraper is moved to
+    a worker thread so the Celery worker's event loop remains responsive.
+    """
 
     def __init__(
         self,
@@ -40,24 +45,39 @@ class ProfileService:
         self._scraper = scraper
 
     async def sync_profile(self, username: str) -> ProfileSyncResult:
-        """Scrape and persist a Letterboxd profile.
+        """Scrape, validate, and transactionally reconcile a Letterboxd profile.
+
+        The complete provider response is obtained before persistence. A valid empty
+        profile is rejected so it cannot masquerade as a successful destructive
+        synchronization; known and unknown films are then delegated to the shared
+        ``Log``/``FilmQueue``/``LogPending`` ingestion workflow.
 
         Args:
             username: Public Letterboxd username.
 
         Returns:
-            Identifiers and counts for the synchronized profile.
+            ProfileSyncResult: Persisted user identity, when resolvable, and the
+                number of valid watches supplied by Letterboxd.
 
         Raises:
             EmptyProfileError: If no valid watched films were returned.
+            ProfileScrapeError: Propagates safe scraper-boundary failures for worker
+                retry classification.
+            Exception: Propagates database failures after transactional rollback.
         """
         logger.info("Synchronizing profile for username=%s", username)
+        # The provider client is blocking; keep it outside the persistent worker
+        # event loop and do not open a database transaction during network I/O.
         profile = await asyncio.to_thread(self._scraper, username)
         if not profile.watches:
             raise EmptyProfileError
 
+        # Persist the complete profile through the same known/unknown-film contract
+        # used by other live ingestion paths.
         await sync_user_logs(profile, session_factory=self._session_factory)
 
+        # Re-read the committed user identity for the task's public result rather
+        # than depending on ORM state owned inside the ingestion transaction.
         async with self._session_factory() as session:
             user = await UserRepository(session).get_by_username(profile.username)
 

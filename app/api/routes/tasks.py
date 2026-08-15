@@ -26,7 +26,12 @@ async def submit_profile_sync(
     service: Annotated[TaskService, Depends(get_task_service)],
     force: Annotated[bool, Query()] = False,
 ) -> TaskSubmissionResponse:
-    """Create or reuse a durable Letterboxd profile-sync task."""
+    """Create or reuse a durable asynchronous Letterboxd profile sync.
+
+    New and active tasks return 202. A reused recently completed task returns 200;
+    ``force`` bypasses only freshness and never concurrent active ownership. Redis or
+    broker failures are exposed as retryable 503 responses.
+    """
     response.status_code = status.HTTP_202_ACCEPTED
     normalized_username = username.strip()
     if not normalized_username:
@@ -61,7 +66,11 @@ async def get_task_state(
     task_id: Annotated[str, Path(min_length=1, max_length=100)],
     service: Annotated[TaskService, Depends(get_task_service)],
 ) -> TaskStateResponse:
-    """Return application-owned task state without Celery state inference."""
+    """Return application-owned Redis task state without Celery inference.
+
+    Expired or unknown metadata returns 404, infrastructure failure returns 503, and
+    stored worker errors are already product-safe before schema serialization.
+    """
     try:
         task = await service.get_task(task_id)
     except TaskInfrastructureError as exc:

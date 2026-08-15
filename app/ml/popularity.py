@@ -42,6 +42,7 @@ class PopularityArtifact:
     films: tuple[PopularityEntry, ...]
 
     def to_dict(self) -> dict[str, Any]:
+        """Serialize the validated artifact to its stable JSON shape."""
         return {
             "schema": self.schema,
             "rating_threshold": self.rating_threshold,
@@ -52,7 +53,12 @@ class PopularityArtifact:
 
 
 def build_popularity_artifact(data: PreparedInteractions) -> PopularityArtifact:
-    """Rank resolved films by positive controlled-cohort interaction count."""
+    """Rank every resolved film by controlled-cohort positive interaction count.
+
+    Ratings at least 3.5 contribute once per prepared user/film pair. Zero-count
+    films remain in the artifact, and equal counts resolve by actual film ID so
+    repeated builds are byte-order deterministic.
+    """
     counts = np.zeros(len(data.film_ids), dtype=np.int64)
     positive_bucket = rating_to_bucket(POPULARITY_RATING_THRESHOLD)
     for user in data.users:
@@ -82,7 +88,15 @@ def build_popularity_artifact(data: PreparedInteractions) -> PopularityArtifact:
 def validate_popularity_artifact(
     artifact: PopularityArtifact,
 ) -> PopularityArtifact:
-    """Reject incompatible, corrupt, or nondeterministically ordered artifacts."""
+    """Reject incompatible, corrupt, or nondeterministically ordered artifacts.
+
+    Returns:
+        PopularityArtifact: The same instance after all schema and ordering checks.
+
+    Raises:
+        ValueError: If schema/source/threshold, counts, identities, ranks, or ordering
+            violate the serving contract.
+    """
     if artifact.schema != POPULARITY_ARTIFACT_SCHEMA:
         raise ValueError("unsupported popularity artifact schema")
     if artifact.rating_threshold != POPULARITY_RATING_THRESHOLD:
@@ -112,7 +126,11 @@ def validate_popularity_artifact(
 def popularity_artifact_from_dict(
     payload: Mapping[str, Any],
 ) -> PopularityArtifact:
-    """Parse and validate a JSON-compatible popularity payload."""
+    """Parse a JSON-compatible payload with strict integer and schema semantics.
+
+    Raises:
+        ValueError: If required fields, value types, or artifact invariants are invalid.
+    """
     try:
         films_payload = payload["films"]
         if not isinstance(films_payload, list):
@@ -145,7 +163,13 @@ def _strict_json_integer(value: object) -> int:
 
 
 def read_popularity_artifact(path: str | Path) -> PopularityArtifact:
-    """Load and validate a popularity artifact from disk."""
+    """Load and validate a popularity artifact before it reaches serving state.
+
+    Raises:
+        OSError: If the artifact cannot be opened.
+        ValueError: If JSON parsing or artifact validation fails.
+        TypeError: If the root JSON value is not an object.
+    """
     try:
         with Path(path).open(encoding="utf-8") as artifact_file:
             payload = json.load(artifact_file)
@@ -160,7 +184,15 @@ def write_popularity_artifact(
     artifact: PopularityArtifact,
     path: str | Path,
 ) -> Path:
-    """Validate and atomically write the controlled-popularity artifact."""
+    """Validate and atomically publish a controlled-popularity artifact.
+
+    JSON is flushed and fsynced in a same-directory temporary file before atomic
+    replacement. An existing valid destination therefore survives serialization or
+    validation failure.
+
+    Returns:
+        Path: Final artifact destination after successful replacement.
+    """
     validated = validate_popularity_artifact(artifact)
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -168,6 +200,7 @@ def write_popularity_artifact(
         prefix=f".{destination.name}.", suffix=".tmp", dir=destination.parent
     )
     temporary_path = Path(temporary_name)
+    # Durably write the complete replacement before making it visible by name.
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as artifact_file:
             json.dump(validated.to_dict(), artifact_file, indent=2)

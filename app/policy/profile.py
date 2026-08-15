@@ -11,11 +11,11 @@ from app.domain.categorized_recommendations import (
 )
 from app.policy.catalog import PolicyCatalog, PolicyEntity
 from app.policy.config import DEFAULT_POLICY_CONFIG, CategoryPolicyConfig
-from app.repositories.interactions import RecommendationHistory
-from app.services.category_request_profile import (
+from app.policy.request_metrics import (
     CategoryRequestProfile,
     request_stage,
 )
+from app.repositories.interactions import RecommendationHistory
 
 
 @dataclass(slots=True)
@@ -32,7 +32,26 @@ def build_user_category_profile(
     config: CategoryPolicyConfig = DEFAULT_POLICY_CONFIG,
     profiler: CategoryRequestProfile | None = None,
 ) -> UserCategoryProfile:
-    """Build one leakage-free profile from explicit ratings and watched count."""
+    """Build one support-aware profile from explicit ratings and watched depth.
+
+    Only catalog-resolved explicit ratings inform affinity. Each entity family's
+    deviation from the user's own mean is confidence-smoothed, while anchors require
+    model-indexed positive evidence. Watched-but-unrated films affect only history
+    depth and never preference strength.
+
+    Args:
+        user_id: Persisted identity carried into policy output.
+        history: Single request snapshot of watched and rated interactions.
+        catalog: Immutable policy metadata bounded to the model vocabulary.
+        config: Frozen support, rating, and history-band thresholds.
+        profiler: Optional request-local measurements.
+
+    Returns:
+        UserCategoryProfile: Deterministically ordered preferences, anchors, rating
+            counts, and the sparse/established/deep history band.
+    """
+    # Restrict evidence to metadata-resolved explicit ratings; watched-only entries
+    # remain useful solely for history depth and candidate exclusion upstream.
     with request_stage(profiler, "profile_rating_aggregation"):
         rated = tuple(
             interaction
@@ -41,6 +60,8 @@ def build_user_category_profile(
         )
         ratings = [interaction.rating for interaction in rated]
         user_mean = fmean(ratings) if ratings else None
+    # Build each family independently so support cannot leak between directors,
+    # genres, decades, countries, and languages.
     preferences: dict[EntityFamily, tuple[EntityPreferenceRecord, ...]] = {}
     for family in ("director", "genre", "decade", "country", "language"):
         with request_stage(profiler, f"profile_{family}_preferences"):
@@ -52,6 +73,8 @@ def build_user_category_profile(
                 config,
             )
 
+    # Anchors must exist in the vector vocabulary because their later neighborhood
+    # proposal computes exact item-vector similarities.
     anchors = tuple(
         sorted(
             (
@@ -74,6 +97,7 @@ def build_user_category_profile(
         for interaction in rated
     )
     watched_count = len(set(history.watched_film_ids))
+    # History bands alter portfolio role priority, not underlying affinity scores.
     if len(rated) < config.sparse_rated_threshold:
         history_band = "sparse"
     elif watched_count >= config.deep_watched_threshold:
@@ -113,6 +137,7 @@ def _family_preferences(
     catalog: PolicyCatalog,
     config: CategoryPolicyConfig,
 ) -> tuple[EntityPreferenceRecord, ...]:
+    """Aggregate and deterministically rank one metadata family's preferences."""
     if user_mean is None:
         return ()
     accumulators: dict[int, _PreferenceAccumulator] = {}
@@ -152,6 +177,7 @@ def _preference_record(
     smoothing: float,
     config: CategoryPolicyConfig,
 ) -> EntityPreferenceRecord:
+    """Create one confidence-shrunk affinity relative to the user's mean rating."""
     ratings = accumulator.ratings
     support = len(ratings)
     mean_rating = fmean(ratings)
@@ -182,6 +208,7 @@ def preference_evidence_tier(
     *,
     config: CategoryPolicyConfig = DEFAULT_POLICY_CONFIG,
 ) -> str:
+    """Classify qualified preference support under frozen V1.1 thresholds."""
     minimum = (
         config.director_minimum_support
         if preference.family == "director"
@@ -207,6 +234,7 @@ def qualifying_preferences(
 def _qualifies(
     preference: EntityPreferenceRecord, config: CategoryPolicyConfig
 ) -> bool:
+    """Apply director-specific or broad-family minimum evidence gates."""
     if preference.affinity <= 0:
         return False
     if preference.family == "director":

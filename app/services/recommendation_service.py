@@ -1,4 +1,9 @@
-"""Current SVD recommendation artifact lifecycle and inference."""
+"""Serve the legacy SVD mean-pooling recommendation endpoint.
+
+This compatibility service owns immutable SVD/FAISS resources for one API lifespan.
+It intentionally preserves unrated-watch exclusion and unweighted rated-film mean
+pooling while the categorized feed uses a separate positive-weighted pipeline.
+"""
 
 import logging
 from pathlib import Path
@@ -25,7 +30,11 @@ RECOMMENDATION_STRATEGY = "SVD_Mean_Pooling"
 
 
 class RecommendationService:
-    """Serve recommendations using the existing SVD mean-pooling baseline."""
+    """Serve the backward-compatible SVD mean-pooling recommendation contract.
+
+    The service owns one immutable artifact set per API lifespan. It is intentionally
+    separate from the positive-weighted, RRF-ranked categorized feed.
+    """
 
     def __init__(
         self,
@@ -44,7 +53,10 @@ class RecommendationService:
         return self._artifacts is not None
 
     def load_artifacts(self) -> bool:
-        """Load and validate NumPy, JSON, and exact FAISS artifacts.
+        """Load the complete NumPy, identity-map, and exact-FAISS artifact set.
+
+        Any missing or inconsistent resource clears the resident state, keeping the
+        health endpoint and request failures aligned with actual model availability.
 
         Returns:
             True when all artifacts were loaded and validated; otherwise False.
@@ -79,13 +91,19 @@ class RecommendationService:
         logger.info("Recommendation artifacts unloaded")
 
     async def recommend(self, user_id: int) -> RecommendationResult:
-        """Generate up to ten recommendations using current SVD semantics.
+        """Generate up to ten films using frozen SVD mean-pooling semantics.
+
+        Watched and rated identities are read in one session. Only rated films that
+        exist in the model contribute equally to the query vector; FAISS retrieves
+        extra neighbors solely to compensate for watched-film exclusion. Catalog
+        rows are fetched in one batch and restored to exact retrieval order.
 
         Args:
-            user_id: Database identifier for the target user.
+            user_id: Persisted user whose rated films form the mean SVD profile.
 
         Returns:
-            Ordered recommendation results.
+            RecommendationResult: Ordered display films, or a successful empty
+                result explaining absent history/model-compatible ratings.
 
         Raises:
             ModelUnavailableError: If artifacts are not currently loaded.
@@ -95,6 +113,8 @@ class RecommendationService:
             raise ModelUnavailableError
 
         async with self._session_factory() as session:
+            # Read watched and rated universes in the same session so exclusion and
+            # profile construction reflect one persisted-history snapshot.
             interaction_repository = InteractionRepository(session)
             watched_film_ids = await interaction_repository.get_watched_film_ids(
                 user_id
@@ -119,6 +139,8 @@ class RecommendationService:
                     recommendations=(),
                 )
 
+            # Preserve legacy equal-weight mean pooling exactly; categorized
+            # recommendations use the separate positive-weighted profile strategy.
             user_vector = np.mean(artifacts.item_vectors[rated_indexes], axis=0)
             query = np.ascontiguousarray(
                 user_vector.reshape(1, -1),
@@ -137,6 +159,8 @@ class RecommendationService:
                 requested_k,
             )
 
+            # Over-retrieval compensates only for indexed watched films, then the
+            # configured candidate depth is restored after exclusion.
             candidates: list[tuple[int, float]] = []
             for raw_film_id, raw_score in zip(
                 faiss_ids[0], faiss_scores[0], strict=True
@@ -148,9 +172,12 @@ class RecommendationService:
                 if len(candidates) == self._retrieval_top_k:
                     break
 
+            # Fetch display metadata once to avoid per-candidate relationship queries.
             candidate_ids = [film_id for film_id, _ in candidates]
             films = await FilmRepository(session).get_by_ids(candidate_ids)
 
+        # Database IN queries do not preserve FAISS order; materialize by the stored
+        # candidate sequence and stop at the public endpoint's ten-item contract.
         films_by_id = {film.id: film for film in films}
         recommendations = []
         for film_id, score in candidates:

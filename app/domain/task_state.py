@@ -34,7 +34,12 @@ class TaskError:
 
 @dataclass(frozen=True, slots=True)
 class TaskMetadata:
-    """Durable, pollable metadata for one profile-sync task."""
+    """Immutable, Redis-persisted state for one pollable profile-sync task.
+
+    Celery delivery state is deliberately not authoritative. API and worker replace
+    this value through explicit queued, processing, completed, and failed transitions;
+    only ``TaskError`` values safe for public polling are stored.
+    """
 
     task_id: str
     type: Literal["profile_sync"]
@@ -59,7 +64,11 @@ class TaskMetadata:
         )
 
     def processing(self) -> "TaskMetadata":
-        """Transition a queued task into processing."""
+        """Return processing state with a fresh start time and incremented attempt.
+
+        Prior terminal payloads are cleared so a retry cannot expose stale result or
+        error data while work is active.
+        """
         return replace(
             self,
             status=TaskStatus.PROCESSING,
@@ -71,7 +80,7 @@ class TaskMetadata:
         )
 
     def completed(self, result: TaskResult) -> "TaskMetadata":
-        """Transition a task into successful completion."""
+        """Return terminal success with a finish time and no prior public error."""
         return replace(
             self,
             status=TaskStatus.COMPLETED,
@@ -81,7 +90,7 @@ class TaskMetadata:
         )
 
     def failed(self, error: TaskError) -> "TaskMetadata":
-        """Transition a task into terminal failure."""
+        """Return terminal failure with product-safe error and no stale result."""
         return replace(
             self,
             status=TaskStatus.FAILED,
@@ -91,7 +100,7 @@ class TaskMetadata:
         )
 
     def to_json(self) -> str:
-        """Serialize task metadata to JSON-safe Redis storage."""
+        """Serialize task metadata to compact, Celery-independent Redis JSON."""
         payload: dict[str, Any] = {
             "task_id": self.task_id,
             "type": self.type,
@@ -116,7 +125,13 @@ class TaskMetadata:
 
     @classmethod
     def from_json(cls, value: str | bytes) -> "TaskMetadata":
-        """Deserialize task metadata from Redis."""
+        """Deserialize and type-normalize task metadata read from Redis.
+
+        Raises:
+            ValueError: If JSON is invalid, the task type/status is unsupported, or a
+                required value cannot be normalized.
+            KeyError: If required metadata fields are absent.
+        """
         payload = json.loads(value)
         if payload.get("type") != "profile_sync":
             raise ValueError("unsupported task type")

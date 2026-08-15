@@ -1,10 +1,13 @@
+"""Defines the persisted director entity and its film relationship."""
+
 from sqlalchemy import Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.core.database import Base
 
 
 class Director(Base):
-    """Film Directors table"""
+    """Normalized director identity shared by film and preference relationships."""
     __tablename__ = "directors"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

@@ -29,7 +29,7 @@ router = APIRouter()
 async def get_categorized_recommendation_service(
     request: Request,
 ) -> CategorizedRecommendationService:
-    """Resolve the worker-owned categorized service from application state."""
+    """Resolve the lifespan-owned categorized service or fail with public 503."""
     service = getattr(request.app.state, "categorized_recommendation_service", None)
     if service is None or not service.is_loaded:
         raise HTTPException(
@@ -48,7 +48,12 @@ async def recommendations(
     user_id: Annotated[int, Path(gt=0)],
     service: Annotated[RecommendationBackend, Depends(get_recommendation_service)],
 ) -> RecommendationResponse:
-    """Return recommendations from the live SVD mean-pooling service."""
+    """Return the backward-compatible SVD mean-pooling recommendation response.
+
+    Model absence is a retryable 503; unexpected inference/database failures are
+    logged privately and sanitized to 500. Valid users with insufficient rated
+    history receive the service's successful empty response.
+    """
     try:
         result = await service.recommend(user_id)
     except ModelUnavailableError as exc:
@@ -87,8 +92,15 @@ async def recommendation_feed(
         Depends(get_categorized_recommendation_service),
     ],
 ) -> RecommendationFeedResponse:
-    """Return the active categorized recommendation rows for one user."""
+    """Return the active categorized feed through a sanitized public mapper.
+
+    Unknown users return 404 and unloaded lifespan resources return 503. Internal
+    policy diagnostics, scores, support, roles, and ranks are removed before the
+    response, while structured operational logs retain only aggregate feed metrics.
+    """
     started = time.perf_counter()
+    # Keep domain generation and public mapping separately timed so response-boundary
+    # overhead remains observable without exposing internal diagnostics.
     try:
         result = await service.recommend(user_id)
         mapping_started = time.perf_counter()
@@ -113,6 +125,7 @@ async def recommendation_feed(
             detail="Categorized recommendation generation failed.",
         ) from exc
 
+    # Log bounded aggregate output characteristics after successful sanitization.
     category_keys = [category.key for category in response.categories]
     film_count = sum(len(category.items) for category in response.categories)
     logger.info(

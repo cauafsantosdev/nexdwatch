@@ -1,3 +1,5 @@
+"""Defines interactions awaiting resolution of an unknown film slug."""
+
 from sqlalchemy import Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.types import Enum

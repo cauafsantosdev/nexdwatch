@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 
 
 def catalog_refresh_years(execution_date: date) -> tuple[int, ...]:
-    """Return the dynamic January/July policy years for a UTC execution date."""
+    """Return the frozen January/July target years for a UTC execution date.
+
+    Raises:
+        ValueError: If invoked outside the two scheduled refresh months.
+    """
     if execution_date.month == 1:
         return (execution_date.year - 1,)
     if execution_date.month == 7:
@@ -29,6 +33,11 @@ def catalog_refresh_years(execution_date: date) -> tuple[int, ...]:
 
 
 def _valid_aggregate_values(metadata: dict[str, Any]) -> dict[str, float | int]:
+    """Extract only finite rating and exact non-negative log-count updates.
+
+    Invalid fields are omitted independently, allowing a valid aggregate to refresh
+    without trusting unrelated scraped metadata.
+    """
     values: dict[str, float | int] = {}
     raw_rating = metadata.get("avg_rating")
     if raw_rating is not None and not isinstance(raw_rating, bool):
@@ -58,7 +67,29 @@ async def refresh_recent_catalog(
     scraper: Callable[[list[str]], list[FilmScrapeResult]] = scrape_film_queue,
     dry_run: bool = False,
 ) -> CatalogRefreshResult:
-    """Refresh only avg_rating and total_logs for existing target-year films."""
+    """Refresh only aggregate fields for existing films in scheduled target years.
+
+    Selection is read once in film-ID order and the blocking scraper runs as one
+    batch outside the event loop. Batch failure propagates for Celery retry; after a
+    response, malformed/scrape-failed films are isolated and each valid film commits
+    in its own transaction. No title, relationships, or identity fields are updated.
+
+    Args:
+        execution_date: UTC schedule date defining January/July target years.
+        session_factory: Async database transaction factory.
+        scraper: Blocking batch scraper executed in a worker thread.
+        dry_run: Measure selected rows without scraping or writing.
+
+    Returns:
+        CatalogRefreshResult: Target years, selected/updated/failed counts, dry-run
+            marker, and total duration.
+
+    Raises:
+        ValueError: If the execution month is outside the schedule policy.
+        Exception: Propagates selection or whole-batch scraper failure for task retry.
+    """
+    # Freeze the target identity set before network work; dry runs stop after this
+    # bounded database read and never invoke the scraper.
     started = time.perf_counter()
     years = catalog_refresh_years(execution_date)
     async with session_factory() as session:
@@ -80,6 +111,8 @@ async def refresh_recent_catalog(
         _log_refresh(result)
         return result
 
+    # Treat a whole scraper exception as retryable batch failure. Returned per-film
+    # outcomes are handled independently below.
     id_by_slug = {slug: film_id for film_id, slug in rows}
     scrape_results = await asyncio.to_thread(scraper, list(id_by_slug))
     results_by_slug = {result.slug: result for result in scrape_results}
@@ -100,6 +133,8 @@ async def refresh_recent_catalog(
             failed += 1
             logger.warning("Catalog refresh aggregates malformed film_slug=%s", slug)
             continue
+        # Commit aggregates per film so one persistence failure cannot roll back
+        # successful refreshes for unrelated catalog entries.
         try:
             async with session_factory() as session, session.begin():
                 await session.execute(
