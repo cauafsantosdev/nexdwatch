@@ -1,4 +1,17 @@
 .venv/
-data/
+.venv-*/
 .env
+
 __pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+build/
+dist/
+
+# Local datasets and generated artifacts are never committed. Keep the inventory.
+**/data/*
+!data/README.md

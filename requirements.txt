@@ -18,3 +18,4 @@ typer
 python-dotenv
 rich
 pytest
+httpx
