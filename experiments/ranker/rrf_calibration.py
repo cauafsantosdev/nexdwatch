@@ -17,7 +17,6 @@ from numpy.typing import NDArray
 
 from app.core.config import Settings, get_settings
 from app.domain.candidates import RecommendationCandidate
-from app.ml.catalog import load_catalog_slug_mapping
 from app.ml.historical_interactions import (
     PreparedInteractions,
     UserSplit,
@@ -25,6 +24,7 @@ from app.ml.historical_interactions import (
     load_historical_interactions,
 )
 from app.ml.svd_profiles import build_svd_profile
+from experiments.catalog import load_catalog_slug_mapping
 from experiments.ranker.artifacts import (
     FoldArtifacts,
     RankerUserContext,
@@ -74,6 +74,7 @@ class RRFConfiguration:
 
     @property
     def key(self) -> str:
+        """Return a stable human-readable calibration-grid identifier."""
         return f"svd={self.svd_weight}_popularity={self.popularity_weight}_k={self.k}"
 
 

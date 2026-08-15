@@ -10,9 +10,9 @@ from pydantic import ValidationError
 torch = pytest.importorskip("torch")
 
 from app.core.config import get_settings
-from app.ml import catalog
 from app.ml.faiss_index import create_faiss_index
 from app.ml.historical_interactions import UserSplit
+from experiments import catalog
 from experiments.neural_retrieval import training as ncf_training
 from experiments.neural_retrieval.config import NeuralRetrievalSettings
 from experiments.neural_retrieval.data import TrainingExample

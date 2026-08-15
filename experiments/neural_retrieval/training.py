@@ -17,18 +17,18 @@ from sklearn.decomposition import TruncatedSVD
 from sklearn.preprocessing import normalize
 
 from app.core.config import Settings, get_settings
-from app.ml.catalog import load_catalog_slug_mapping
-from app.ml.evaluation import (
-    build_evaluation_svd_training_matrix,
-    popularity_order_rows,
-    training_positive_counts,
-)
 from app.ml.faiss_index import create_faiss_index
 from app.ml.historical_interactions import (
     PreparedInteractions,
     UserSplit,
     build_interaction_splits,
     load_historical_interactions,
+)
+from experiments.catalog import load_catalog_slug_mapping
+from experiments.evaluation import (
+    build_evaluation_svd_training_matrix,
+    popularity_order_rows,
+    training_positive_counts,
 )
 from experiments.neural_retrieval.artifacts import (
     NCF_ARTIFACT_SCHEMA,

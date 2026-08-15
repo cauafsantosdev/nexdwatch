@@ -11,14 +11,18 @@ from app.policy.allocation import allocate_categories
 from app.policy.catalog import PolicyCatalog
 from app.policy.config import DEFAULT_POLICY_CONFIG, CategoryPolicyConfig
 from app.policy.proposals import build_category_proposals
-from app.services.category_request_profile import (
+from app.policy.request_metrics import (
     CategoryRequestProfile,
     request_stage,
 )
 
 
 class CategorizedPolicyEngine:
-    """Build and allocate category proposals without transport or persistence."""
+    """Build and allocate category proposals without transport or persistence.
+
+    The engine is lifespan-scoped and reads immutable catalog/vector resources. Its
+    optional request metrics are observational and never affect policy output.
+    """
 
     def __init__(
         self,
@@ -40,6 +44,19 @@ class CategorizedPolicyEngine:
         *,
         profiler: CategoryRequestProfile | None = None,
     ) -> CategoryPolicyResult:
+        """Construct eligible proposals and allocate the frozen category portfolio.
+
+        Args:
+            ranked_candidates: RRF-ordered unwatched inventory shared by all shelves.
+            profile: Request-scoped preference evidence and history-depth band.
+            profiler: Optional observational metrics collector.
+
+        Returns:
+            CategoryPolicyResult: Ranked input, all viable proposals, selected
+                categories, and deterministic policy diagnostics.
+        """
+        # Proposal construction evaluates semantic eligibility once; allocation then
+        # applies portfolio-level overlap, diversity, and reuse constraints.
         proposals = build_category_proposals(
             ranked_candidates,
             profile,

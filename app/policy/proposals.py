@@ -18,7 +18,7 @@ from app.domain.categorized_recommendations import (
 from app.policy.catalog import PolicyCatalog, PolicyFilm
 from app.policy.config import DEFAULT_POLICY_CONFIG, CategoryPolicyConfig
 from app.policy.profile import preference_evidence_tier, qualifying_preferences
-from app.services.category_request_profile import (
+from app.policy.request_metrics import (
     CategoryRequestProfile,
     request_stage,
 )
@@ -39,6 +39,8 @@ CATEGORY_KEYS = (
 
 @dataclass(frozen=True, slots=True)
 class ProposalBuildResult:
+    """Ordered eligible category proposals plus deterministic diagnostics."""
+
     proposals: tuple[CategoryProposal, ...]
     diagnostics: dict[str, Any]
 
@@ -53,7 +55,28 @@ def build_category_proposals(
     config: CategoryPolicyConfig = DEFAULT_POLICY_CONFIG,
     profiler: CategoryRequestProfile | None = None,
 ) -> ProposalBuildResult:
-    """Build all viable V1 category proposals exactly once for one user."""
+    """Build every viable V1 category proposal over one frozen ranked inventory.
+
+    Each semantic builder filters or reorders the same unwatched RRF candidates; no
+    builder retrieves additional films. The anchor proposal alone uses item-vector
+    neighborhoods, and diagnostics record unavailable categories and evidence pools
+    without changing eligibility.
+
+    Args:
+        ranked_candidates: Deterministic RRF inventory shared by all builders.
+        profile: Support-aware user evidence and anchor candidates.
+        catalog: Immutable policy/display metadata.
+        item_vectors: Normalized SVD vectors used only for anchor similarity.
+        id_to_position: Film-ID mapping into ``item_vectors``.
+        config: Frozen V1.1 eligibility and size thresholds.
+        profiler: Optional observational stage/count collector.
+
+    Returns:
+        ProposalBuildResult: Viable proposals plus deterministic diagnostics.
+
+    Raises:
+        RuntimeError: If candidate identity changes during proposal construction.
+    """
     candidate_by_id = {candidate.film_id: candidate for candidate in ranked_candidates}
     proposals: list[CategoryProposal] = []
     diagnostics: dict[str, Any] = {}
@@ -68,12 +91,15 @@ def build_category_proposals(
         _outside_usual,
         _classic_cinema,
     )
+    # Evaluate each metadata/rank category exactly once over the shared inventory.
     for builder in builders:
         with request_stage(profiler, f"proposal_{builder.__name__.lstrip('_')}"):
             proposal = builder(ranked_candidates, profile, catalog, config)
         if proposal is not None:
             proposals.append(proposal)
 
+    # Anchor similarity is evaluated separately because it requires vector batches
+    # and returns selection diagnostics alongside its optional proposal.
     with request_stage(profiler, "proposal_because_you_liked"):
         anchor, anchor_diagnostics = _because_you_liked(
             ranked_candidates,
@@ -107,6 +133,7 @@ def _top_picks(
     catalog: PolicyCatalog,
     config: CategoryPolicyConfig,
 ) -> CategoryProposal | None:
+    """Expose the global RRF order as the mandatory general-purpose shelf."""
     del profile, catalog
     if not ranked:
         return None
@@ -137,6 +164,7 @@ def _hidden_gems(
     catalog: PolicyCatalog,
     config: CategoryPolicyConfig,
 ) -> CategoryProposal | None:
+    """Select strong non-head SVD neighbors only after sufficient positive evidence."""
     del catalog
     if profile.indexed_positive_count < config.hidden_minimum_indexed_positives:
         return None
@@ -165,6 +193,7 @@ def _brazilian_cinema(
     catalog: PolicyCatalog,
     config: CategoryPolicyConfig,
 ) -> CategoryProposal | None:
+    """Select Brazilian films backed by positive personalized SVD evidence."""
     del profile
     eligible = [
         candidate
@@ -198,6 +227,7 @@ def _directors_you_love(
     catalog: PolicyCatalog,
     config: CategoryPolicyConfig,
 ) -> CategoryProposal | None:
+    """Pool films from the strongest qualified directors under per-director caps."""
     directors = qualifying_preferences(profile, "director", config=config)[
         : config.director_pool_size
     ]
@@ -253,6 +283,7 @@ def _favorite_genre(
     catalog: PolicyCatalog,
     config: CategoryPolicyConfig,
 ) -> CategoryProposal | None:
+    """Build a shelf for the strongest support-qualified genre preference."""
     preferences = qualifying_preferences(profile, "genre", config=config)
     return _single_entity_proposal(
         ranked,
@@ -272,6 +303,7 @@ def _favorite_decade(
     catalog: PolicyCatalog,
     config: CategoryPolicyConfig,
 ) -> CategoryProposal | None:
+    """Build a shelf for the strongest support-qualified release decade."""
     preferences = qualifying_preferences(profile, "decade", config=config)
     return _single_entity_proposal(
         ranked,
@@ -291,6 +323,7 @@ def _world_cinema(
     catalog: PolicyCatalog,
     config: CategoryPolicyConfig,
 ) -> CategoryProposal | None:
+    """Select non-English-core cinema, preferring qualified cultural affinities."""
     country_preferences = tuple(
         preference
         for preference in qualifying_preferences(profile, "country", config=config)
@@ -390,6 +423,13 @@ def _outside_usual(
     catalog: PolicyCatalog,
     config: CategoryPolicyConfig,
 ) -> CategoryProposal | None:
+    """Select personalized candidates outside the user's familiar metadata.
+
+    Viability requires evidence across multiple familiar families. Non-head SVD
+    matches use the primary path; optionally admitted lower-head films face stricter
+    source/rank gates, and hidden-neighborhood candidates can be excluded to keep the
+    shelf semantically distinct from Hidden Gems.
+    """
     familiar = {
         family: {
             value.entity_id
@@ -487,6 +527,7 @@ def _classic_cinema(
     catalog: PolicyCatalog,
     config: CategoryPolicyConfig,
 ) -> CategoryProposal | None:
+    """Select pre-boundary classics supported by positive SVD evidence."""
     eligible = [
         candidate
         for candidate in ranked
@@ -530,7 +571,30 @@ def _because_you_liked(
     *,
     maximum_rating_only: bool = True,
 ) -> tuple[CategoryProposal | None, dict[str, Any]]:
+    """Choose one rated anchor and rank its local candidate-vector neighborhood.
+
+    Eligible high-rated anchors are compared against model-indexed candidates in
+    bounded matrix batches. The winning anchor prioritizes rating, neighborhood
+    similarity/size, low Top-Picks overlap, and film-ID stability. A second exact
+    similarity pass materializes its shelf with similarity, RRF, and ID tie breaks.
+
+    Args:
+        ranked: Shared RRF candidate inventory.
+        profile: Rated, model-indexed anchor evidence.
+        catalog: Accepted for the uniform builder contract; metadata is unused.
+        item_vectors: Normalized model vectors for candidates and anchors.
+        id_to_position: Film-ID to vector-row mapping.
+        config: Frozen anchor thresholds, batch size, and neighborhood definition.
+        profiler: Optional operation-count collector.
+        maximum_rating_only: Restrict expensive evaluation to maximum-rated anchors
+            while retaining baseline batch shapes for exact numeric reproducibility.
+
+    Returns:
+        A possible anchor proposal and diagnostics describing eligibility/selection.
+    """
     del catalog
+    # Prefer strongly rated anchors, falling back only when none meet the primary
+    # threshold; candidates and anchors must both be in the vector vocabulary.
     high_anchors = [
         anchor for anchor in profile.anchors if anchor.rating >= config.anchor_rating
     ]
@@ -562,6 +626,8 @@ def _because_you_liked(
     competitive_anchors = tuple(
         anchor for anchor in valid_anchors if anchor.rating == maximum_rating
     )
+    # Preserve the calibrated batch matrix shapes because float32 BLAS accumulation
+    # can otherwise alter exact diagnostics and the canonical output fingerprint.
     if maximum_rating_only:
         evaluation_batches = []
         for start in range(0, len(valid_anchors), config.anchor_similarity_batch_size):
@@ -590,6 +656,8 @@ def _because_you_liked(
             int(candidate_matrix.shape[1]) if candidate_matrix.ndim == 2 else 0,
         )
     neighborhood_size = _anchor_neighborhood_size(config, len(candidate_ids))
+    # Evaluate bounded local neighborhoods and retain only anchors capable of
+    # satisfying the shelf minimum.
     neighborhoods: list[tuple[Any, float, int, float, float]] = []
     for batch in evaluation_batches:
         anchor_matrix = np.ascontiguousarray(
@@ -637,6 +705,8 @@ def _because_you_liked(
             )
     if not neighborhoods:
         return None, {"eligible_anchors": len(anchors), "selected": None}
+    # Select deterministically, penalizing overlap with the global Top Picks shelf
+    # after rating and neighborhood quality have been considered.
     selected = min(
         neighborhoods,
         key=lambda value: (
@@ -648,6 +718,7 @@ def _because_you_liked(
         ),
     )
     anchor, mean_similarity, usable_count, overlap, similarity_cutoff = selected
+    # Recompute the winning row once and materialize its exact similarity-first order.
     similarities = candidate_matrix @ item_vectors[id_to_position[anchor.film_id]]
     finite_indices = np.flatnonzero(np.isfinite(similarities))
     usable_indices = (
@@ -712,6 +783,7 @@ def _because_you_liked(
 def _anchor_neighborhood_size(
     config: CategoryPolicyConfig, candidate_count: int
 ) -> int | None:
+    """Resolve the configured fixed or fractional local-neighborhood size."""
     if config.anchor_neighborhood_limit is not None:
         return min(config.anchor_neighborhood_limit, candidate_count)
     if config.anchor_neighborhood_fraction is not None:
@@ -726,6 +798,7 @@ def _anchor_neighborhood_size(
 
 
 def _anchor_neighborhood_rule(config: CategoryPolicyConfig) -> str:
+    """Describe the active anchor neighborhood policy for diagnostics."""
     if config.anchor_neighborhood_limit is not None:
         return f"top_{config.anchor_neighborhood_limit}"
     if config.anchor_neighborhood_fraction is not None:
@@ -770,6 +843,7 @@ def _single_entity_proposal(
     reason_code: RecommendationReasonCode,
     config: CategoryPolicyConfig,
 ) -> CategoryProposal | None:
+    """Build a minimum-sized proposal around one qualified entity preference."""
     if preference is None:
         return None
     candidates = [
@@ -813,6 +887,7 @@ def _generic_proposal(
     evidence_tier: str = "minimum",
     policy_metadata: dict[str, Any] | None = None,
 ) -> CategoryProposal | None:
+    """Materialize a preordered candidate list only when its minimum is viable."""
     if len(candidates) < minimum:
         return None
     return CategoryProposal(
@@ -841,6 +916,7 @@ def _candidate_reason(
     anchor_film_id: int | None = None,
     anchor_title: str | None = None,
 ) -> RecommendationReason:
+    """Map retrieval evidence to one internal, non-prose reason record."""
     return RecommendationReason(
         code=code,
         additional_codes=(
@@ -861,6 +937,7 @@ def _entity_reason(
     preference: EntityPreferenceRecord,
     config: CategoryPolicyConfig,
 ) -> RecommendationReason:
+    """Enrich a candidate reason with support-aware entity evidence."""
     base = _candidate_reason(code, candidate)
     return RecommendationReason(
         code=base.code,
@@ -880,6 +957,7 @@ def _matching_preferences(
     family: str,
     preference_by_id: dict[int, EntityPreferenceRecord],
 ) -> list[EntityPreferenceRecord]:
+    """Return a film's matching preferences in strongest deterministic order."""
     if film is None:
         return []
     matches = [
@@ -915,6 +993,7 @@ def _is_hidden_neighborhood_candidate(
     profile: UserCategoryProfile,
     config: CategoryPolicyConfig,
 ) -> bool:
+    """Apply the calibrated MID/TAIL positive-SVD gates for Hidden Gems."""
     return (
         profile.indexed_positive_count >= config.hidden_minimum_indexed_positives
         and _positive_svd_evidence(candidate)
@@ -931,6 +1010,7 @@ def _is_hidden_neighborhood_candidate(
 def _head_balance_metadata(
     candidates: list[RankedCandidate], head_cap: int | None
 ) -> dict[str, Any]:
+    """Encode a proposal's hard head-film cap for the allocation stage."""
     if head_cap is None:
         return {}
     return {
@@ -951,6 +1031,7 @@ def _is_brazilian(film: PolicyFilm | None, config: CategoryPolicyConfig) -> bool
 
 
 def _is_world_cinema(film: PolicyFilm, config: CategoryPolicyConfig) -> bool:
+    """Require both a non-core country and a non-English language signal."""
     non_core_country = any(
         entity.name.casefold() not in config.english_core_country_names
         and entity.name.casefold() not in config.metadata_none_names
@@ -979,6 +1060,7 @@ def _preference_summary(preference: EntityPreferenceRecord) -> dict[str, Any]:
 def _director_diagnostics(
     profile: UserCategoryProfile, config: CategoryPolicyConfig
 ) -> dict[str, Any]:
+    """Summarize the qualified and selected director evidence pools."""
     qualified = qualifying_preferences(profile, "director", config=config)
     selected = qualified[: config.director_pool_size]
     return {

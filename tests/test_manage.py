@@ -103,7 +103,7 @@ def test_manage_does_not_expose_neural_experiment_commands() -> None:
 def test_analyze_candidates_reports_recall_hybrids_and_output_path(
     monkeypatch, tmp_path
 ) -> None:
-    from app.ml import candidate_analysis
+    from experiments.retrieval import candidate_analysis
 
     summary = {"mean": 0.2, "population_std": 0.01}
     report = {
@@ -190,7 +190,8 @@ def test_analyze_candidates_reports_recall_hybrids_and_output_path(
 
 
 def test_build_popularity_command_reports_artifact(monkeypatch, tmp_path) -> None:
-    from app.ml import catalog, historical_interactions, popularity
+    from app.ml import historical_interactions, popularity
+    from experiments import catalog
 
     artifact = SimpleNamespace(film_count=12, rating_threshold=3.5)
     monkeypatch.setattr(catalog, "load_catalog_slug_mapping", lambda: {"a": 1})

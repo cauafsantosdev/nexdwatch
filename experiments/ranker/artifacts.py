@@ -9,13 +9,13 @@ from scipy.sparse import csr_matrix
 from sklearn.decomposition import TruncatedSVD
 from sklearn.preprocessing import normalize
 
-from app.ml.candidate_analysis import assign_popularity_strata
 from app.ml.faiss_index import create_faiss_index
 from app.ml.ratings import rating_to_bucket
 from experiments.ranker.config import (
     NEGATIVE_RATING_THRESHOLD,
     POSITIVE_RATING_THRESHOLD,
 )
+from experiments.retrieval.candidate_analysis import assign_popularity_strata
 
 
 @dataclass(frozen=True, slots=True)
@@ -150,4 +150,5 @@ def build_fold_artifacts(
 
 
 def positive_rating_bucket() -> int:
+    """Return the frozen bucket boundary for positive ranker interactions."""
     return rating_to_bucket(POSITIVE_RATING_THRESHOLD)

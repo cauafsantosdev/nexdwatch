@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+"""Provides the stable Typer CLI for data, research, and model operations."""
+
 import asyncio
 import json
 import resource
@@ -110,12 +112,12 @@ def build_popularity(
     ] = POPULARITY_ARTIFACT_PATH,
 ) -> None:
     """Build the deterministic controlled-cohort popularity artifact."""
-    from app.ml.catalog import load_catalog_slug_mapping
     from app.ml.historical_interactions import load_historical_interactions
     from app.ml.popularity import (
         build_popularity_artifact,
         write_popularity_artifact,
     )
+    from experiments.catalog import load_catalog_slug_mapping
 
     typer.echo(f"Loading controlled interactions from: {LOGS_CSV_PATH}")
     try:
@@ -471,7 +473,10 @@ def analyze_candidates(
     ] = CANDIDATE_REPORT_PATH,
 ) -> None:
     """Analyze offline candidate recall, coverage, overlap, and source unions."""
-    from app.ml.candidate_analysis import CANDIDATE_CUTOFFS, run_candidate_analysis
+    from experiments.retrieval.candidate_analysis import (
+        CANDIDATE_CUTOFFS,
+        run_candidate_analysis,
+    )
 
     try:
         parsed_seeds = tuple(int(value.strip()) for value in seeds.split(","))

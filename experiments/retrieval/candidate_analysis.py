@@ -1,4 +1,4 @@
-"""Offline candidate-generation analysis over leakage-free shared holdouts."""
+"""Evaluates candidate-generation policies over leakage-free shared holdouts."""
 
 import json
 import logging
@@ -20,12 +20,6 @@ from sklearn.preprocessing import normalize
 
 from app.core.config import Settings, get_settings
 from app.ml.candidate_policy import FINAL_CANDIDATE_NOMINAL_BUDGET
-from app.ml.catalog import load_catalog_slug_mapping
-from app.ml.evaluation import (
-    build_evaluation_svd_training_matrix,
-    popularity_order_rows,
-    training_positive_counts,
-)
 from app.ml.faiss_index import create_faiss_index
 from app.ml.historical_interactions import (
     PreparedInteractions,
@@ -34,6 +28,12 @@ from app.ml.historical_interactions import (
     load_historical_interactions,
 )
 from app.ml.svd_profiles import build_svd_profile
+from experiments.catalog import load_catalog_slug_mapping
+from experiments.evaluation import (
+    build_evaluation_svd_training_matrix,
+    popularity_order_rows,
+    training_positive_counts,
+)
 
 CANDIDATE_ANALYSIS_PROTOCOL = "exact_holdout_v2"
 CANDIDATE_CUTOFFS = (
@@ -106,6 +106,7 @@ class StrategyEvaluation:
     stratified_metrics: dict[str, dict[str, Any]]
 
     def report(self) -> dict[str, Any]:
+        """Serialize one strategy's aggregate and stratified diagnostics."""
         return {
             "metrics": strategy_metrics_report(self.metrics),
             "catalog_coverage": self.catalog_coverage,
@@ -1031,6 +1032,7 @@ def _recommend_candidate_sources(
 
 
 def metric_view_report(view: MetricView) -> dict[str, Any]:
+    """Serialize one conditional or global retrieval metric view."""
     return {
         "recall_at": dict(view.recall_at),
         "ndcg_at_10": view.ndcg_at_10,
@@ -1040,6 +1042,7 @@ def metric_view_report(view: MetricView) -> dict[str, Any]:
 
 
 def strategy_metrics_report(metrics: StrategyMetrics) -> dict[str, Any]:
+    """Serialize both denominator views and query-eligibility coverage."""
     return {
         "conditional": metric_view_report(metrics.conditional),
         "global": metric_view_report(metrics.global_view),

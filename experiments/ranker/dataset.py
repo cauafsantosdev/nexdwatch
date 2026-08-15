@@ -90,6 +90,7 @@ class PartitionDataset:
     failed_training_group_count: int
 
     def validate(self) -> None:
+        """Reject misaligned feature rows, groups, and query audit metadata."""
         row_count = len(self.labels)
         if self.features.shape != (row_count, len(FEATURE_NAMES)):
             raise ValueError("ranker feature matrix has an unexpected shape")
@@ -108,6 +109,7 @@ class PartitionDataset:
                 raise ValueError("ranker query rows are not contiguous")
 
     def missing_rates(self) -> dict[str, float]:
+        """Report per-feature missing-value rates for benchmark diagnostics."""
         return {
             name: float(np.isnan(self.features[:, index]).mean())
             for index, name in enumerate(FEATURE_NAMES)

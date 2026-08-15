@@ -6,16 +6,16 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.typing import NDArray
 
-from app.ml.candidate_analysis import assign_popularity_strata
-from app.ml.evaluation import training_positive_counts
 from app.ml.historical_interactions import UserSplit
 from app.ml.ratings import rating_to_bucket
+from experiments.evaluation import training_positive_counts
 from experiments.ranker.config import (
     NEGATIVE_RATING_THRESHOLD,
     POSITIVE_RATING_THRESHOLD,
     TRAINING_HOLDOUT_LIMIT,
     USER_FOLD_COUNT,
 )
+from experiments.retrieval.candidate_analysis import assign_popularity_strata
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +27,7 @@ class UserFoldAssignment:
     target_stratum_by_user: dict[int, str]
 
     def partitions(self, fold: int) -> tuple[set[int], set[int], set[int]]:
+        """Return disjoint train, validation, and test users for one fold."""
         if fold < 0 or fold >= USER_FOLD_COUNT:
             raise ValueError("ranker fold is out of range")
         test = {

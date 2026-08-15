@@ -1,4 +1,4 @@
-"""Lightweight internal timing/counter collection for category serving."""
+"""Collects request-local timing and counters without affecting policy output."""
 
 import time
 from collections import Counter, defaultdict

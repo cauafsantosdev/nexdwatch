@@ -1,4 +1,4 @@
-"""Internal orchestration for categorized recommendations; not a public backend."""
+"""Orchestrates the production categorized feed from immutable model resources."""
 
 import logging
 from pathlib import Path
@@ -17,12 +17,12 @@ from app.policy.config import DEFAULT_POLICY_CONFIG, CategoryPolicyConfig
 from app.policy.engine import CategorizedPolicyEngine
 from app.policy.profile import build_user_category_profile
 from app.policy.ranking import rank_candidates_by_rrf
-from app.repositories.interactions import InteractionRepository
-from app.services.candidate_generation_service import CandidateGenerationService
-from app.services.category_request_profile import (
+from app.policy.request_metrics import (
     CategoryRequestProfile,
     request_stage,
 )
+from app.repositories.interactions import InteractionRepository
+from app.services.candidate_generation_service import CandidateGenerationService
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,11 @@ class RecommendationUserNotFoundError(LookupError):
 
 
 class CategorizedRecommendationService:
-    """Compose finalized retrieval, RRF, and policy without FastAPI integration."""
+    """Compose finalized retrieval, RRF, policy, and display materialization.
+
+    One service is owned by each API lifespan. Candidate artifacts and the policy
+    catalog remain immutable after loading; requests read only current user history.
+    """
 
     def __init__(
         self,
@@ -57,6 +61,7 @@ class CategorizedRecommendationService:
 
     @property
     def is_loaded(self) -> bool:
+        """Return whether every artifact, catalog, and policy dependency is ready."""
         return (
             self._candidate_service.is_loaded
             and self._catalog is not None
@@ -65,7 +70,11 @@ class CategorizedRecommendationService:
         )
 
     def load_candidate_artifacts(self) -> bool:
-        """Load frozen candidate artifacts separately for resource measurement."""
+        """Load frozen candidate artifacts separately for resource measurement.
+
+        Returns:
+            bool: Whether compatible SVD, FAISS, and popularity resources loaded.
+        """
         return self._candidate_service.load_artifacts()
 
     def configure_artifacts(
@@ -81,10 +90,20 @@ class CategorizedRecommendationService:
         )
 
     async def load_policy_catalog(self) -> bool:
-        """Load and intern the bounded policy metadata snapshot."""
+        """Load policy metadata for exactly the model's film identity universe.
+
+        The catalog, policy engine, and popularity-rank lookup are published only
+        after every dependency is available, preventing partially loaded serving
+        state.
+
+        Returns:
+            bool: ``True`` when all downstream policy resources are ready together.
+        """
         svd = self._candidate_service.svd_artifacts
         if svd is None:
             return False
+        # Bound the database snapshot to model identities so policy eligibility can
+        # never materialize films that retrieval cannot produce.
         async with self._session_factory() as session:
             self._catalog = await load_policy_catalog(session, svd.film_index)
         self._policy_engine = CategorizedPolicyEngine(
@@ -104,7 +123,11 @@ class CategorizedRecommendationService:
         return True
 
     async def load_resources(self) -> bool:
-        """Load immutable artifacts and one bounded policy catalog snapshot."""
+        """Load immutable candidate artifacts and their bounded policy snapshot.
+
+        Returns:
+            bool: ``True`` only when the complete categorized serving graph is ready.
+        """
         if not self.load_candidate_artifacts():
             return False
         loaded = await self.load_policy_catalog()
@@ -113,6 +136,7 @@ class CategorizedRecommendationService:
         return loaded
 
     def unload_resources(self) -> None:
+        """Release lifespan-owned immutable resources during graceful shutdown."""
         self._candidate_service.unload_artifacts()
         self._catalog = None
         self._policy_engine = None
@@ -125,13 +149,33 @@ class CategorizedRecommendationService:
         *,
         profiler: CategoryRequestProfile | None = None,
     ) -> CategorizedRecommendationResult:
-        """Build an internal categorized result from one user-history read."""
+        """Build one categorized feed while recording optional request metrics.
+
+        Args:
+            user_id: Existing persisted user to personalize.
+            profiler: Optional request-local timing and operation-count collector.
+
+        Returns:
+            CategorizedRecommendationResult: Ordered categories and policy diagnostics.
+
+        Raises:
+            CategoryPolicyResourcesUnavailableError: If lifespan resources are not
+                fully loaded.
+            RecommendationUserNotFoundError: If ``user_id`` does not exist.
+        """
         with request_stage(profiler, "total_request"):
             return await self._recommend(user_id, profiler)
 
     async def _recommend(
         self, user_id: int, profiler: CategoryRequestProfile | None
     ) -> CategorizedRecommendationResult:
+        """Execute retrieval, fusion, policy allocation, and materialization.
+
+        User history is read exactly once and passed through all stages. Candidate
+        generation excludes watched films, RRF freezes source consensus, and policy
+        allocation selects unique film IDs before display values are materialized
+        from the lifespan-owned catalog.
+        """
         catalog = self._catalog
         svd = self._candidate_service.svd_artifacts
         popularity = self._candidate_service.popularity_artifact
@@ -146,12 +190,16 @@ class CategorizedRecommendationService:
         ):
             raise CategoryPolicyResourcesUnavailableError
         with request_stage(profiler, "history_database_read"):
+            # Use one history snapshot for profile evidence, watched exclusion, and
+            # source generation; a missing user is distinct from empty history.
             async with self._session_factory() as session:
                 history = await InteractionRepository(
                     session
                 ).get_existing_user_recommendation_history(user_id)
         if history is None:
             raise RecommendationUserNotFoundError(user_id)
+        # Candidate generation and RRF establish the single deterministic ordering
+        # from which every category proposal is allowed to select.
         candidates = self._candidate_service.generate_from_history(
             user_id, history, profiler=profiler
         )
@@ -170,6 +218,8 @@ class CategorizedRecommendationService:
                 config=self._config,
                 profiler=profiler,
             )
+        # Policy allocation may reuse proposal eligibility internally, but selected
+        # display IDs are deduplicated before metadata materialization.
         policy = policy_engine.categorize(ranked, profile, profiler=profiler)
         selected_ids = tuple(
             dict.fromkeys(
@@ -185,6 +235,8 @@ class CategorizedRecommendationService:
                 if film_id in catalog.films
             }
         with request_stage(profiler, "domain_result_materialization"):
+            # Reapply each allocated category's order and minimum after catalog
+            # projection so incomplete metadata cannot leak undersized shelves.
             ranked_by_id = {candidate.film_id: candidate for candidate in ranked}
             categories = []
             for allocated in policy.allocated_categories:

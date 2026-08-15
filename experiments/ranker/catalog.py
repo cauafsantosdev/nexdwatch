@@ -18,9 +18,11 @@ class IndexedRelation:
     indices: NDArray[np.int32]
 
     def entities(self, film_row: int) -> NDArray[np.int32]:
+        """Return compact entity identifiers associated with one film row."""
         return self.indices[self.indptr[film_row] : self.indptr[film_row + 1]]
 
     def counts(self) -> NDArray[np.int32]:
+        """Return the number of entity memberships for every film row."""
         return np.diff(self.indptr).astype(np.int32, copy=False)
 
 

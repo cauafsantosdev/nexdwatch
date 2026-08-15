@@ -17,7 +17,6 @@ import numpy as np
 
 from app.core.config import Settings, get_settings
 from app.core.database import SessionLocal
-from app.ml.catalog import load_catalog_slug_mapping
 from app.ml.historical_interactions import (
     build_interaction_splits,
     load_historical_interactions,
@@ -34,6 +33,7 @@ from app.policy.profile import (
 from app.policy.proposals import CATEGORY_KEYS
 from app.policy.ranking import rank_candidates_by_rrf
 from app.repositories.interactions import RatedInteraction, RecommendationHistory
+from experiments.catalog import load_catalog_slug_mapping
 from experiments.ranker.config import (
     NEGATIVE_RATING_THRESHOLD,
     POSITIVE_RATING_THRESHOLD,

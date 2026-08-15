@@ -71,4 +71,5 @@ class NeuralRetrievalSettings(BaseSettings):
 
 @lru_cache
 def get_neural_retrieval_settings() -> NeuralRetrievalSettings:
+    """Return isolated neural-research settings without changing app configuration."""
     return NeuralRetrievalSettings()

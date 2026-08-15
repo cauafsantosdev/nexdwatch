@@ -1,4 +1,4 @@
-"""Shared leakage-free evaluation data primitives."""
+"""Provides leakage-safe matrices and popularity ordering for experiments."""
 
 import numpy as np
 from numpy.typing import NDArray

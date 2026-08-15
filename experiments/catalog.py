@@ -1,4 +1,4 @@
-"""Controlled catalog identity loading for offline ML workflows."""
+"""Loads catalog identities shared by NexdWatch's offline experiments."""
 
 from sqlalchemy import create_engine, text
 

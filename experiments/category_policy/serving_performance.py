@@ -27,12 +27,12 @@ from sqlalchemy import event
 
 from app.core.database import engine
 from app.policy.catalog import PolicyCatalog, PolicyEntity
-from app.services.categorized_recommendation_service import (
-    CategorizedRecommendationService,
-)
-from app.services.category_request_profile import (
+from app.policy.request_metrics import (
     CURRENT_CATEGORY_STAGE,
     CategoryRequestProfile,
+)
+from app.services.categorized_recommendation_service import (
+    CategorizedRecommendationService,
 )
 from experiments.category_policy.evaluate import _atomic_json
 

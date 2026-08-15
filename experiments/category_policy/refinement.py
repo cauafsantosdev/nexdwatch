@@ -9,7 +9,6 @@ from statistics import fmean, median
 from typing import Any
 
 from app.core.config import Settings, get_settings
-from app.ml.catalog import load_catalog_slug_mapping
 from app.ml.historical_interactions import (
     build_interaction_splits,
     load_historical_interactions,
@@ -34,6 +33,7 @@ from app.policy.proposals import (
     _world_cinema,
 )
 from app.policy.ranking import rank_candidates_by_rrf
+from experiments.catalog import load_catalog_slug_mapping
 from experiments.category_policy.evaluate import (
     _atomic_json,
     _context_history,

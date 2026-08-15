@@ -16,12 +16,12 @@ from typing import Any
 import numpy as np
 
 from app.core.config import Settings, get_settings
-from app.ml.catalog import load_catalog_slug_mapping
 from app.ml.historical_interactions import (
     PreparedInteractions,
     build_interaction_splits,
     load_historical_interactions,
 )
+from experiments.catalog import load_catalog_slug_mapping
 from experiments.ranker.artifacts import RankerUserContext, build_fold_artifacts
 from experiments.ranker.catalog import RankerCatalog, load_ranker_catalog
 from experiments.ranker.config import (

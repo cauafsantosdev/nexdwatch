@@ -6,7 +6,9 @@ import sys
 import numpy as np
 import pytest
 
-from app.ml.candidate_analysis import (
+from app.ml.historical_interactions import UserSplit
+from experiments.evaluation import training_positive_counts
+from experiments.retrieval.candidate_analysis import (
     CANDIDATE_BUDGETS,
     CANDIDATE_CUTOFFS,
     assign_popularity_strata,
@@ -21,8 +23,6 @@ from app.ml.candidate_analysis import (
     metric_view_from_ranks,
     ratio_grid_location,
 )
-from app.ml.evaluation import training_positive_counts
-from app.ml.historical_interactions import UserSplit
 
 
 def _buckets(*ratings: float) -> np.ndarray:
@@ -193,7 +193,7 @@ def test_budgeted_hybrid_deduplicates_excludes_and_preserves_sources() -> None:
 
 def test_standard_candidate_analysis_import_does_not_load_torch() -> None:
     script = (
-        "import sys; import app.ml.candidate_analysis; "
+        "import sys; import experiments.retrieval.candidate_analysis; "
         "assert 'torch' not in sys.modules"
     )
 
