@@ -1,5 +1,10 @@
 # Categorized recommendation policy V1 results
 
+> **Historical experiment report:** This V1 baseline predates the V1.1 refinement and
+> public categorized feed. Measurements and readiness conclusions below are preserved
+> in their original context. See [V1.1 results](RESULTS_V1_1.md) and
+> [current production behavior](../../docs/recommendation-system.md).
+
 Evaluation date: 2026-08-11. The ignored machine-readable report is
 `data/analysis/category_policy.json`.
 

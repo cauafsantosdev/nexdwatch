@@ -1,5 +1,10 @@
 # Full-pool LambdaRank benchmark results
 
+> **Historical experiment report:** Measurements and conclusions below are preserved
+> as evaluated. LightGBM remains rejected, while the selected fixed 50/50 RRF with
+> `k=60` now supplies production feed ordering. See
+> [the current recommendation system](../../docs/recommendation-system.md).
+
 ## Protocol
 
 These results use `strict_out_of_user_lambdarank_full_pool_v2`: five strict

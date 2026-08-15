@@ -1,5 +1,10 @@
 # Categorized recommendation serving performance
 
+> **Historical experiment report:** The measurements below justified the production
+> categorized feed that now serves policy V1.1. Original pre-API recommendations are
+> retained as historical context. See
+> [the current architecture](../../docs/architecture.md).
+
 This note records the semantics-preserving V1.1 serving pass run on 2026-08-12.
 The generated JSON reports are intentionally ignored:
 

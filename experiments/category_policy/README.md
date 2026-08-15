@@ -1,5 +1,10 @@
 # Categorized recommendation policy V1.1
 
+> **Current status:** Policy V1.1 is now the production categorized-feed policy at
+> `GET /recommendations/{user_id}/feed`. The experiment runners remain offline and do
+> not participate in FastAPI startup. See
+> [the production methodology](../../docs/recommendation-system.md).
+
 This package evaluates NexdWatch's internal portfolio policy. It does not
 participate in FastAPI startup or replace the live `SVD_Mean_Pooling` service.
 The frozen input is the existing 2,000 positive-weighted-SVD candidates plus

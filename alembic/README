@@ -1,1 +1,20 @@
-Generic single-database configuration.
+NexdWatch database migrations
+=============================
+
+PostgreSQL schema changes are managed by Alembic. Configure `.env`, ensure the
+database is reachable through the `POSTGRES_*` settings, then apply every committed
+revision with:
+
+    alembic upgrade head
+
+With Compose:
+
+    docker compose run --rm api alembic upgrade head
+
+Create a new revision only for an intentional schema change:
+
+    alembic revision --autogenerate -m "describe the schema change"
+
+Review generated SQL and both upgrade/downgrade functions before committing. Never
+edit, squash, rename, or reorder existing files in `alembic/versions`; deployed
+databases identify them by revision ID.

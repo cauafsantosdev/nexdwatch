@@ -1,5 +1,10 @@
 # Offline ranking research
 
+> **Current status:** LightGBM remains rejected. The fixed equal-weight RRF result
+> documented here now supplies the global ordering used by the categorized production
+> feed; no research ranker is loaded by FastAPI. See
+> [the production methodology](../../docs/recommendation-system.md).
+
 This package is an isolated research pipeline. It does not alter the production
 candidate policy or FastAPI recommendation path. Each fold builds temporary SVD,
 exact FAISS, controlled-popularity, and film-aggregate artifacts from ranker
@@ -66,5 +71,6 @@ and only then evaluates test users:
 The ignored JSON report is a compact 172 KiB summary containing aggregate
 validation behavior, test metrics, stability, clustered uncertainty, and
 segments. The measured fixed recommendation remains equal-weight RRF with
-`k=60`; this result is documented in [RESULTS.md](RESULTS.md). It has not been
-wired into public serving.
+`k=60`; this result is documented in [RESULTS.md](RESULTS.md). At the time of this
+research pass it had not yet been wired into public serving; the status note above
+records the later production integration.

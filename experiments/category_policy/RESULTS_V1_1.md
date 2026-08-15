@@ -1,5 +1,10 @@
 # Categorized recommendation policy V1.1 results
 
+> **Historical experiment report:** Results below are preserved as evaluated before
+> the public feed and subsequent semantics-preserving serving optimization. V1.1 is
+> now the production policy. See [serving performance](SERVING_PERFORMANCE.md) and
+> [current production behavior](../../docs/recommendation-system.md).
+
 Evaluation date: 2026-08-11. Historical V1 conclusions remain in
 `RESULTS.md`. The ignored machine-readable reports are
 `data/analysis/category_policy_v1_1.json`,
