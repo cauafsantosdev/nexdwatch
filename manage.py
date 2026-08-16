@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-
 """Provides the stable Typer CLI for data, research, and model operations."""
 
 import asyncio

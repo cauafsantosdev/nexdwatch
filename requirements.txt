@@ -19,3 +19,4 @@ python-dotenv
 rich
 pytest
 httpx
+ruff==0.16.3

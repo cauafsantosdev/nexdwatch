@@ -31,9 +31,9 @@ def safe_convert(value, dtype):
         return None
     
     try:
-        if dtype == float:
+        if dtype is float:
             return float(value)
-        if dtype == str:
+        if dtype is str:
             clean_val = str(value).strip()
             return clean_val if clean_val else None
     except (ValueError, TypeError):
