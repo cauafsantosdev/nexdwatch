@@ -4,6 +4,8 @@
 .ruff_cache
 __pycache__
 *.py[cod]
+frontend/node_modules
+frontend/.next
 data/*
 !data/item_embeddings.npy
 !data/film_index.json
