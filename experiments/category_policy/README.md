@@ -36,12 +36,13 @@ positive affinity, and (for directors) bounded contradictory negative evidence.
 
 ## Semantic choices
 
-- Brazilian cinema means any film whose available country metadata contains
-  `Brazil` or `Brasil`. The schema does not identify a primary production
-  country, so international co-productions can qualify.
-- World Cinema requires both a non-core-English country association and a
-  non-English language association. Core English countries are configured
-  explicitly; user locale is not inferred.
+- Brazilian Cinema V1.2 requires both a `Brazil`/`Brasil` country association and
+  either `Portuguese` or `No spoken language` metadata. This precision-biased rule
+  can exclude genuinely Brazilian films spoken entirely in another language.
+- World Cinema V1.2 requires both a non-core-English country association and at
+  least one non-English language, while excluding every film that also has an
+  `English` language association. Core English countries remain explicit; user
+  locale and primary-language ordering are not inferred.
 - Outside Your Usual Picks requires positive SVD retrieval, no match against
   the strongest qualifying director, genre, decade, country, or language
   entities, and explicit exclusion of the Hidden-Gems neighborhood. The V1.1

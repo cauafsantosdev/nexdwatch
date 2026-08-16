@@ -35,6 +35,10 @@ class CategoryPolicyConfig:
 
     brazilian_minimum: int = 8
     brazilian_country_names: tuple[str, ...] = ("brazil", "brasil")
+    brazilian_language_names: tuple[str, ...] = (
+        "portuguese",
+        "no spoken language",
+    )
 
     anchor_minimum: int = 8
     anchor_maximum: int = 20

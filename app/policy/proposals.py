@@ -1029,14 +1029,22 @@ def _head_balance_metadata(
 
 
 def _is_brazilian(film: PolicyFilm | None, config: CategoryPolicyConfig) -> bool:
-    return film is not None and any(
+    """Require Brazilian country metadata plus a qualifying language signal."""
+    if film is None:
+        return False
+    has_brazil_country = any(
         entity.name.casefold() in config.brazilian_country_names
         for entity in film.countries
     )
+    has_brazilian_language = any(
+        entity.name.casefold() in config.brazilian_language_names
+        for entity in film.languages
+    )
+    return has_brazil_country and has_brazilian_language
 
 
 def _is_world_cinema(film: PolicyFilm, config: CategoryPolicyConfig) -> bool:
-    """Require both a non-core country and a non-English language signal."""
+    """Require non-core country and non-English-only language signals."""
     non_core_country = any(
         entity.name.casefold() not in config.english_core_country_names
         and entity.name.casefold() not in config.metadata_none_names
@@ -1047,7 +1055,11 @@ def _is_world_cinema(film: PolicyFilm, config: CategoryPolicyConfig) -> bool:
         and entity.name.casefold() not in config.metadata_none_names
         for entity in film.languages
     )
-    return non_core_country and non_english_language
+    english_language = any(
+        entity.name.casefold() in config.english_language_names
+        for entity in film.languages
+    )
+    return non_core_country and non_english_language and not english_language
 
 
 def _preference_summary(preference: EntityPreferenceRecord) -> dict[str, Any]:

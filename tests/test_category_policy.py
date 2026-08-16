@@ -27,7 +27,12 @@ from app.policy.profile import (
     build_user_category_profile,
     qualifying_preferences,
 )
-from app.policy.proposals import _because_you_liked, build_category_proposals
+from app.policy.proposals import (
+    _because_you_liked,
+    _brazilian_cinema,
+    _world_cinema,
+    build_category_proposals,
+)
 from app.policy.ranking import rank_candidates_by_rrf
 from app.repositories.interactions import (
     RatedInteraction,
@@ -297,6 +302,154 @@ def test_brazil_world_outside_and_classic_eligibility_are_constrained() -> None:
         for candidate in (ranked[film_id - 1] for film_id in outside)
     )
     assert by_key["outside_usual"].policy_metadata["maximum_head_count"] == 4
+
+
+def test_world_cinema_excludes_every_english_association_and_preserves_order() -> None:
+    mexico = _entity(1, "Mexico")
+    france = _entity(2, "France")
+    usa = _entity(3, "USA")
+    spanish = _entity(10, "Spanish")
+    english = _entity(11, "English")
+    french = _entity(12, "French")
+    no_spoken_language = _entity(13, "No spoken language")
+    films = [
+        PolicyFilm(
+            1, "Non-English only", 2000, countries=(mexico,), languages=(spanish,)
+        ),
+        PolicyFilm(2, "English only", 2000, countries=(mexico,), languages=(english,)),
+        PolicyFilm(
+            3,
+            "English multilingual",
+            2000,
+            countries=(mexico,),
+            languages=(spanish, english),
+        ),
+        PolicyFilm(
+            4,
+            "Non-English multilingual",
+            2000,
+            countries=(mexico, france),
+            languages=(spanish, french),
+        ),
+        PolicyFilm(
+            5, "Core-country film", 2000, countries=(usa,), languages=(spanish,)
+        ),
+        PolicyFilm(6, "Missing language", 2000, countries=(mexico,)),
+        PolicyFilm(
+            7,
+            "No dialogue marker",
+            2000,
+            countries=(mexico,),
+            languages=(no_spoken_language,),
+        ),
+        PolicyFilm(
+            8, "Too-deep candidate", 2000, countries=(mexico,), languages=(spanish,)
+        ),
+        PolicyFilm(
+            9, "Country-cap overflow", 2000, countries=(mexico,), languages=(spanish,)
+        ),
+    ]
+    ranked = tuple(
+        _ranked(
+            film_id,
+            rank,
+            svd_rank=501 if film_id == 8 else rank,
+        )
+        for rank, film_id in enumerate((1, 2, 3, 4, 5, 6, 7, 8, 9), start=1)
+    )
+    proposal = _world_cinema(
+        ranked,
+        _profile(),
+        _catalog(films),
+        replace(DEFAULT_POLICY_CONFIG, world_minimum=1, world_country_cap=1),
+    )
+
+    assert proposal is not None
+    assert proposal.ordered_candidate_ids == (1, 4)
+    assert 2 not in proposal.ordered_candidate_ids
+    assert 3 not in proposal.ordered_candidate_ids
+    assert 5 not in proposal.ordered_candidate_ids
+    assert 6 not in proposal.ordered_candidate_ids
+    assert 7 not in proposal.ordered_candidate_ids
+    assert 8 not in proposal.ordered_candidate_ids
+    assert 9 not in proposal.ordered_candidate_ids
+
+
+def test_brazilian_cinema_requires_country_and_language_and_preserves_order() -> None:
+    brazil = _entity(1, "Brazil")
+    portugal = _entity(2, "Portugal")
+    portuguese = _entity(10, "Portuguese")
+    no_spoken_language = _entity(11, "No spoken language")
+    english = _entity(12, "English")
+    italian = _entity(13, "Italian")
+    french = _entity(14, "French")
+    films = [
+        PolicyFilm(
+            1, "Brazil Portuguese", 2000, countries=(brazil,), languages=(portuguese,)
+        ),
+        PolicyFilm(
+            2,
+            "Brazil silent",
+            2000,
+            countries=(brazil,),
+            languages=(no_spoken_language,),
+        ),
+        PolicyFilm(
+            3, "Brazil English", 2000, countries=(brazil,), languages=(english,)
+        ),
+        PolicyFilm(
+            4,
+            "Brazil other languages",
+            2000,
+            countries=(brazil,),
+            languages=(italian, french),
+        ),
+        PolicyFilm(
+            5,
+            "Portuguese without Brazil",
+            2000,
+            countries=(portugal,),
+            languages=(portuguese,),
+        ),
+        PolicyFilm(6, "Brazil without language", 2000, countries=(brazil,)),
+        PolicyFilm(
+            7,
+            "Brazil Portuguese multilingual",
+            2000,
+            countries=(brazil,),
+            languages=(portuguese, english),
+        ),
+        PolicyFilm(
+            8,
+            "Popularity-only Brazil Portuguese",
+            2000,
+            countries=(brazil,),
+            languages=(portuguese,),
+        ),
+    ]
+    ranked = tuple(
+        _ranked(
+            film_id,
+            rank,
+            svd_rank=None if film_id == 8 else rank,
+            popularity_rank=rank if film_id == 8 else None,
+        )
+        for rank, film_id in enumerate((7, 3, 1, 2, 4, 5, 6, 8), start=1)
+    )
+    proposal = _brazilian_cinema(
+        ranked,
+        _profile(),
+        _catalog(films),
+        replace(DEFAULT_POLICY_CONFIG, brazilian_minimum=1),
+    )
+
+    assert proposal is not None
+    assert proposal.ordered_candidate_ids == (7, 1, 2)
+    assert 3 not in proposal.ordered_candidate_ids
+    assert 4 not in proposal.ordered_candidate_ids
+    assert 5 not in proposal.ordered_candidate_ids
+    assert 6 not in proposal.ordered_candidate_ids
+    assert 8 not in proposal.ordered_candidate_ids
 
 
 def test_anchor_selection_prefers_lower_top_picks_overlap_after_equal_quality() -> None:

@@ -30,7 +30,7 @@ from app.policy.profile import (
     preference_evidence_tier,
     qualifying_preferences,
 )
-from app.policy.proposals import CATEGORY_KEYS
+from app.policy.proposals import CATEGORY_KEYS, _is_brazilian, _is_world_cinema
 from app.policy.ranking import rank_candidates_by_rrf
 from app.repositories.interactions import RatedInteraction, RecommendationHistory
 from experiments.catalog import load_catalog_slug_mapping
@@ -674,10 +674,7 @@ def _semantic_scope(
         )
     if key == "brazilian_cinema":
         return (
-            any(
-                value.name.casefold() in config.brazilian_country_names
-                for value in film.countries
-            )
+            _is_brazilian(film, config)
             and target_svd_score is not None
             and target_svd_score > 0
         )
@@ -715,7 +712,7 @@ def _semantic_scope(
         values = qualifying_preferences(profile, "decade", config=config)
         return bool(values) and _target_matches(film, values[:1])
     if key == "world_cinema":
-        return _is_world(film, config)
+        return _is_world_cinema(film, config)
     if key == "outside_usual":
         familiar = {
             family: {
@@ -754,18 +751,6 @@ def _target_matches(film: PolicyFilm, preferences: tuple) -> bool:
         entity.id == preference.entity_id
         for preference in preferences
         for entity in film.entities(preference.family)
-    )
-
-
-def _is_world(film: PolicyFilm, config: CategoryPolicyConfig) -> bool:
-    return any(
-        value.name.casefold() not in config.english_core_country_names
-        and value.name.casefold() not in config.metadata_none_names
-        for value in film.countries
-    ) and any(
-        value.name.casefold() not in config.english_language_names
-        and value.name.casefold() not in config.metadata_none_names
-        for value in film.languages
     )
 
 
