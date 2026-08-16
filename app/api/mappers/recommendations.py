@@ -9,6 +9,7 @@ from app.api.schemas.recommendations import (
     RecommendationEntityResponse,
     RecommendationFeedItemResponse,
     RecommendationFeedResponse,
+    RecommendationPreferenceContextResponse,
     RecommendationReasonResponse,
 )
 from app.domain.categorized_recommendations import (
@@ -35,8 +36,9 @@ def map_recommendation_feed(
 ) -> RecommendationFeedResponse:
     """Preserve policy order while removing model and diagnostic implementation data.
 
-    Only product-approved reason fields cross this boundary. RRF scores, ranks,
-    affinities, support diagnostics, and internal category roles remain private.
+    Only product-approved reason fields and aggregate preference context cross this
+    boundary. RRF scores, affinity/confidence calculations, proposal diagnostics,
+    and internal category roles remain private.
 
     Args:
         result: Internal categorized domain result after policy allocation.
@@ -54,12 +56,22 @@ def map_recommendation_feed(
                 experimental=CATEGORY_PRODUCT_METADATA.get(
                     category.key, DEFAULT_CATEGORY_PRODUCT_METADATA
                 ).experimental,
+                preference_context=(
+                    RecommendationPreferenceContextResponse(
+                        average_rating=category.preference_context.average_rating,
+                        rated_count=category.preference_context.rated_count,
+                    )
+                    if category.preference_context is not None
+                    else None
+                ),
                 items=[
                     RecommendationFeedItemResponse(
                         film_id=item.film_id,
                         title=item.title,
                         year=item.year,
                         directors=list(item.directors),
+                        tmdb_id=item.tmdb_id,
+                        slug=item.slug,
                         reason=_map_reason(item.reason),
                     )
                     for item in category.items

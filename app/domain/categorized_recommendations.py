@@ -153,6 +153,14 @@ class RecommendationReason:
 
 
 @dataclass(frozen=True, slots=True)
+class CategoryPreferenceContext:
+    """User-readable rating evidence for one selected preference shelf."""
+
+    average_rating: float
+    rated_count: int
+
+
+@dataclass(frozen=True, slots=True)
 class CategoryProposal:
     """A semantically eligible ordered pool before portfolio allocation."""
 
@@ -168,6 +176,7 @@ class CategoryProposal:
     maximum_size: int
     reasons: dict[int, RecommendationReason]
     policy_metadata: dict[str, Any] = field(default_factory=dict)
+    preference_context: CategoryPreferenceContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +187,8 @@ class CategorizedRecommendation:
     title: str
     year: int | None
     directors: tuple[str, ...]
+    tmdb_id: int | None
+    slug: str
     reason: RecommendationReason
     rrf_rank: int
     popularity_stratum: PopularityStratum
@@ -195,6 +206,7 @@ class RecommendationCategory:
     items: tuple[CategorizedRecommendation, ...]
     evidence_tier: EvidenceTier
     evidence_support: int
+    preference_context: CategoryPreferenceContext | None = None
 
 
 @dataclass(frozen=True, slots=True)

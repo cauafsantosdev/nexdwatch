@@ -1,10 +1,12 @@
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import numpy as np
 
 from app.domain.candidates import CandidateGenerationResult, RecommendationCandidate
+from app.domain.categorized_recommendations import CategoryPreferenceContext
 from app.ml.popularity import PopularityEntry
 from app.policy.catalog import PolicyCatalog, PolicyEntity, PolicyFilm
 from app.policy.engine import CategorizedPolicyEngine
@@ -130,6 +132,16 @@ def test_repeated_recommendations_are_exact_and_use_one_request_query(
         == ["SOURCE_AGREEMENT"]
         for item in first.categories[0].items
     )
+    presentation_only = replace(
+        first,
+        categories=(
+            replace(
+                first.categories[0],
+                preference_context=CategoryPreferenceContext(4.5, 12),
+            ),
+        ),
+    )
+    assert semantic_fingerprint(presentation_only) == semantic_fingerprint(first)
     assert history_read.await_count == 2
     assert session_factory.calls == 2
     assert all(

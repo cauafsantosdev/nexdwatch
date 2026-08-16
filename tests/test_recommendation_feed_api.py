@@ -15,6 +15,7 @@ from app.api.routes.recommendations import (
 from app.domain.categorized_recommendations import (
     CategorizedRecommendation,
     CategorizedRecommendationResult,
+    CategoryPreferenceContext,
     CategoryRole,
     RecommendationCategory,
     RecommendationReason,
@@ -49,6 +50,8 @@ def _item(
         title=f"Film {film_id}",
         year=2000 + film_id,
         directors=("Director",),
+        tmdb_id=1000 + film_id if film_id % 2 else None,
+        slug=f"film-{film_id}",
         reason=reason,
         rrf_rank=film_id,
         popularity_stratum="TAIL",
@@ -60,6 +63,7 @@ def _category(
     key: str,
     title: str,
     *items: CategorizedRecommendation,
+    preference_context: CategoryPreferenceContext | None = None,
 ) -> RecommendationCategory:
     return RecommendationCategory(
         key=key,
@@ -69,6 +73,7 @@ def _category(
         items=items,
         evidence_tier="strong",
         evidence_support=99,
+        preference_context=preference_context,
     )
 
 
@@ -177,8 +182,13 @@ def test_successful_feed_preserves_order_and_exposes_only_product_fields() -> No
         "title",
         "year",
         "directors",
+        "tmdb_id",
+        "slug",
         "reason",
     }
+    assert payload["categories"][0]["items"][0]["tmdb_id"] == 1001
+    assert payload["categories"][0]["items"][0]["slug"] == "film-1"
+    assert "preference_context" not in payload["categories"][0]
     serialized = response.text
     for internal_name in (
         "rrf_rank",
@@ -230,6 +240,59 @@ def test_genre_and_decade_reason_mapping(code, family, name) -> None:
     assert public_reason == {
         "code": code.value,
         "entity": {"type": family, "name": name},
+    }
+
+
+def test_preference_context_is_public_only_for_preference_categories() -> None:
+    original = _result()
+    genre = _category(
+        "favorite_genre",
+        "Western Picks for You",
+        _item(
+            9,
+            RecommendationReason(
+                RecommendationReasonCode.GENRE_AFFINITY,
+                entity_family="genre",
+                entity_name="Western",
+            ),
+        ),
+        preference_context=CategoryPreferenceContext(4.25, 9),
+    )
+    decade = _category(
+        "favorite_decade",
+        "1990s Films for You",
+        _item(
+            10,
+            RecommendationReason(
+                RecommendationReasonCode.DECADE_AFFINITY,
+                entity_family="decade",
+                entity_name="1990s",
+            ),
+        ),
+        preference_context=CategoryPreferenceContext(4.125, 24),
+    )
+    result = replace(original, categories=(original.categories[0], genre, decade))
+
+    payload = map_recommendation_feed(result).model_dump()
+
+    assert [category["key"] for category in payload["categories"]] == [
+        "top_picks",
+        "favorite_genre",
+        "favorite_decade",
+    ]
+    assert [
+        item["film_id"]
+        for category in payload["categories"]
+        for item in category["items"]
+    ] == [1, 9, 10]
+    assert payload["categories"][0]["preference_context"] is None
+    assert payload["categories"][1]["preference_context"] == {
+        "average_rating": 4.25,
+        "rated_count": 9,
+    }
+    assert payload["categories"][2]["preference_context"] == {
+        "average_rating": 4.125,
+        "rated_count": 24,
     }
 
 

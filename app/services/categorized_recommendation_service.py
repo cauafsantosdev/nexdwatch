@@ -252,6 +252,8 @@ class CategorizedRecommendationService:
                             title=film.title,
                             year=film.year,
                             directors=tuple(value.name for value in film.directors),
+                            tmdb_id=film.tmdb_id,
+                            slug=film.slug,
                             reason=allocated.proposal.reasons[film_id],
                             rrf_rank=ranked_candidate.rrf_rank,
                             popularity_stratum=ranked_candidate.popularity_stratum,
@@ -271,6 +273,7 @@ class CategorizedRecommendationService:
                         items=tuple(items),
                         evidence_tier=allocated.proposal.evidence_tier,
                         evidence_support=allocated.proposal.evidence_support,
+                        preference_context=allocated.proposal.preference_context,
                     )
                 )
             result = CategorizedRecommendationResult(

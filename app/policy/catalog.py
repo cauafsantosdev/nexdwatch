@@ -37,6 +37,8 @@ class PolicyFilm:
     genres: tuple[PolicyEntity, ...] = ()
     countries: tuple[PolicyEntity, ...] = ()
     languages: tuple[PolicyEntity, ...] = ()
+    tmdb_id: int | None = None
+    slug: str = ""
 
     @property
     def decade(self) -> int | None:
@@ -90,10 +92,17 @@ async def load_policy_catalog(
     """
     # Read scalar catalog values once, then filter in memory to the model vocabulary.
     allowed = frozenset(int(film_id) for film_id in artifact_film_ids)
-    scalar_result = await session.execute(select(Film.id, Film.title, Film.year))
+    scalar_result = await session.execute(
+        select(Film.id, Film.title, Film.year, Film.tmdb_id, Film.slug)
+    )
     scalars = {
-        int(film_id): (str(title), int(year) if year is not None else None)
-        for film_id, title, year in scalar_result
+        int(film_id): (
+            str(title),
+            int(year) if year is not None else None,
+            int(tmdb_id) if tmdb_id is not None else None,
+            str(slug),
+        )
+        for film_id, title, year, tmdb_id, slug in scalar_result
         if int(film_id) in allowed
     }
     relation_specs = {
@@ -136,8 +145,10 @@ async def load_policy_catalog(
             genres=_ordered_unique(memberships["genre"].get(film_id, [])),
             countries=_ordered_unique(memberships["country"].get(film_id, [])),
             languages=_ordered_unique(memberships["language"].get(film_id, [])),
+            tmdb_id=tmdb_id,
+            slug=slug,
         )
-        for film_id, (title, year) in scalars.items()
+        for film_id, (title, year, tmdb_id, slug) in scalars.items()
     }
     return PolicyCatalog(films=films, artifact_film_ids=allowed)
 

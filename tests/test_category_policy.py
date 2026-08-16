@@ -409,6 +409,17 @@ def test_favorite_genre_and_decade_select_strongest_supported_entities() -> None
     assert by_key["favorite_genre"].ordered_candidate_ids == tuple(range(1, 16))
     assert by_key["favorite_decade"].title_parameters == {"entity": "1990s"}
     assert by_key["favorite_decade"].ordered_candidate_ids == tuple(range(1, 16))
+    assert by_key["favorite_genre"].preference_context is not None
+    assert by_key["favorite_genre"].preference_context.average_rating == 4.5
+    assert by_key["favorite_genre"].preference_context.rated_count == 6
+    assert by_key["favorite_decade"].preference_context is not None
+    assert by_key["favorite_decade"].preference_context.average_rating == 4.5
+    assert by_key["favorite_decade"].preference_context.rated_count == 6
+    assert all(
+        proposal.preference_context is None
+        for proposal in result.proposals
+        if proposal.key not in {"favorite_genre", "favorite_decade"}
+    )
 
 
 def test_anchor_uses_documented_four_star_fallback_only_when_needed() -> None:
@@ -594,7 +605,7 @@ def test_policy_catalog_interns_repeated_relation_entities() -> None:
     session = type("Session", (), {})()
     session.execute = AsyncMock(
         side_effect=[
-            [(1, "One", 2000), (2, "Two", 2001)],
+            [(1, "One", 2000, 101, "one"), (2, "Two", 2001, None, "two")],
             [(1, 7, "Director"), (2, 7, "Director")],
             [],
             [],
@@ -605,6 +616,10 @@ def test_policy_catalog_interns_repeated_relation_entities() -> None:
     catalog = asyncio.run(load_policy_catalog(session, (1, 2)))
 
     assert catalog.films[1].directors[0] is catalog.films[2].directors[0]
+    assert catalog.films[1].tmdb_id == 101
+    assert catalog.films[1].slug == "one"
+    assert catalog.films[2].tmdb_id is None
+    assert catalog.films[2].slug == "two"
     assert session.execute.await_count == 5
 
 

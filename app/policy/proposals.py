@@ -7,6 +7,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from app.domain.categorized_recommendations import (
+    CategoryPreferenceContext,
     CategoryProposal,
     CategoryRole,
     EntityPreferenceRecord,
@@ -870,6 +871,10 @@ def _single_entity_proposal(
         maximum_size=config.default_maximum,
         reasons=reasons,
         policy_metadata={"selected_entity": _preference_summary(preference)},
+        preference_context=CategoryPreferenceContext(
+            average_rating=preference.mean_rating,
+            rated_count=preference.support_count,
+        ),
     )
 
 

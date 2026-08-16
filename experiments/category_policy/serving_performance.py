@@ -289,6 +289,9 @@ def _canonical(value: Any) -> Any:
         return {
             field.name: _canonical(getattr(value, field.name))
             for field in fields(value)
+            # Poster/link metadata is presentation-only and must not redefine the
+            # canonical recommendation identity, ordering, or explanation fingerprint.
+            if field.name not in {"tmdb_id", "slug", "preference_context"}
         }
     if isinstance(value, Enum):
         return value.value

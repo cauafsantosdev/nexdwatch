@@ -80,7 +80,16 @@ class RecommendationFeedItemResponse(BaseModel):
     title: str
     year: int | None
     directors: list[str]
+    tmdb_id: int | None = Field(description="TMDB identifier for poster resolution.")
+    slug: str = Field(description="Canonical Letterboxd film slug.")
     reason: RecommendationReasonResponse
+
+
+class RecommendationPreferenceContextResponse(BaseModel):
+    """Rating evidence explaining an affinity-derived category selection."""
+
+    average_rating: float = Field(description="Mean explicit rating for the preference.")
+    rated_count: int = Field(description="Rated films supporting the preference.")
 
 
 class RecommendationCategoryResponse(BaseModel):
@@ -91,6 +100,7 @@ class RecommendationCategoryResponse(BaseModel):
     experimental: bool = Field(
         description="Whether this category is under explicit product evaluation."
     )
+    preference_context: RecommendationPreferenceContextResponse | None = None
     items: list[RecommendationFeedItemResponse]
 
 
