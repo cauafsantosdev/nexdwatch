@@ -1,0 +1,38 @@
+name: Letterboxd scraper smoke
+
+on:
+  schedule:
+    - cron: "17 10 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: letterboxd-scraper-smoke
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      LETTERBOXD_SMOKE_USERNAME: ${{ vars.LETTERBOXD_SMOKE_USERNAME }}
+      LETTERBOXD_SMOKE_FILM_SLUG: ${{ vars.LETTERBOXD_SMOKE_FILM_SLUG }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install scraper dependency
+        run: python -m pip install --constraint requirements.txt letterboxdpy
+
+      - name: Run bounded live scraper smoke
+        run: timeout 5m python -m scripts.smoke_letterboxd
