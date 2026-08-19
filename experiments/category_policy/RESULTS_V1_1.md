@@ -1,8 +1,10 @@
 # Categorized recommendation policy V1.1 results
 
 > **Historical experiment report:** Results below are preserved as evaluated before
-> the public feed and subsequent semantics-preserving serving optimization. V1.1 is
-> now the production policy. See [serving performance](SERVING_PERFORMANCE.md) and
+> the public feed, the semantics-preserving serving optimization, and the later V1.2
+> cultural eligibility correction. The current feed retains the V1.1 portfolio
+> design but these measurements remain V1.1 results. See
+> [serving performance](SERVING_PERFORMANCE.md) and
 > [current production behavior](../../docs/recommendation-system.md).
 
 Evaluation date: 2026-08-11. Historical V1 conclusions remain in

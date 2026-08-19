@@ -11,8 +11,8 @@ measure the actual application semantics.
 | [Candidate retrieval](retrieval/candidate_analysis.py) | Which bounded SVD/popularity allocation provides useful recall and coverage? | 2,000 + 2,000 selected as a pragmatic serving cap | Selected |
 | [LambdaRank](ranker/RESULTS.md) | Does a 115-feature LightGBM ranker beat the fixed RRF ordering? | Worse global full-pool NDCG@20 and unstable checkpoints | Rejected |
 | [RRF calibration](ranker/RESULTS.md#weighted-rrf-calibration) | Do tuned weights or `k` improve generalization? | Equal-weight `k=60` remained the validation leader; fold tuning lost on test | Selected |
-| [Category policy V1/V1.1](category_policy/README.md) | Can one global ranking become a coherent multi-row feed? | V1.1 improved portfolio balance and preserved deterministic semantics | Selected |
-| [Serving optimization](category_policy/SERVING_PERFORMANCE.md) | Can V1.1 serve synchronously without semantic drift? | Exact fingerprints preserved; warm requests reduced to roughly 100–200 ms | Production |
+| [Category policy V1/V1.1](category_policy/README.md) | Can one global ranking become a coherent multi-row feed? | V1.1 improved portfolio balance; V1.2 later tightened two cultural eligibility predicates | Selected, with V1.2 eligibility |
+| [Serving optimization](category_policy/SERVING_PERFORMANCE.md) | Can V1.1 serve synchronously without semantic drift? | V1.1 fingerprints were preserved; measured warm requests fell to roughly 100–200 ms | Production architecture retained |
 
 ## Reproducibility boundary
 
@@ -30,3 +30,8 @@ or worker image.
 Historical reports retain the language and measurements appropriate to the phase in
 which they were produced. Status banners explain later production changes without
 rewriting those original conclusions.
+
+The current categorized feed applies V1.2 cultural eligibility: World Cinema rejects
+every English-associated film, and Brazilian Cinema requires Brazil/Brasil plus
+Portuguese or no-spoken-language metadata. No tracked V1.2 portfolio rerun replaces
+the historical V1/V1.1 measurements.

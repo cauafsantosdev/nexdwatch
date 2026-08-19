@@ -1,55 +1,70 @@
 # Operations
 
-## Services
+## Compose runtime
 
-The default Compose deployment expects:
+The single-host deployment defines these services:
 
-- `api`: one normal Uvicorn process with automatic model-pointer watching;
-- `worker`: one `profile_sync` Celery worker;
-- `maintenance_worker`: one `maintenance` Celery worker;
-- `beat`: the UTC schedule publisher;
-- `redis`: broker, task state, freshness, and maintenance locks;
-- `db`: PostgreSQL 17.
+| Service | Responsibility |
+| --- | --- |
+| `frontend` | Next.js UI and same-origin BFF |
+| `api` | One Uvicorn process, model resources, and pointer watcher |
+| `worker` | Celery worker for `profile_sync` |
+| `maintenance_worker` | Celery worker for `maintenance` |
+| `beat` | UTC maintenance schedule publisher |
+| `redis` | Broker, task state and freshness, and maintenance locks |
+| `db` | PostgreSQL 17 |
+| `pgadmin` | Optional database administration UI |
+| `notebook` | Optional development-profile notebook environment |
 
-Run exactly one Beat instance. Redis locks protect maintenance work from duplicate
-delivery, but multiple Beat publishers would create needless duplicate messages.
-`pgadmin` is optional administration tooling, and `notebook` is behind the `dev`
-profile.
+Run exactly one Beat instance. The API uses `restart: unless-stopped` because a validated model-pointer change causes graceful process shutdown; Compose starts the process that loads the next generation.
 
 ## Scheduled maintenance
 
-| UTC schedule | Task |
-| --- | --- |
-| Sunday 02:00 | Process at most `FILM_QUEUE_BATCH_SIZE` pending films |
-| Sunday 04:00 | Evaluate retraining thresholds and enqueue training when eligible |
-| January 15 03:00 | Refresh previous-year film aggregates |
-| July 15 03:00 | Refresh previous- and current-year film aggregates |
+| UTC schedule | Task | Scope |
+| --- | --- | --- |
+| Sunday 02:00 | Process film queue | At most `FILM_QUEUE_BATCH_SIZE` pending films |
+| Sunday 04:00 | Evaluate retraining | Build only when a lifecycle threshold is met |
+| January 15 03:00 | Refresh recent catalog | Previous-year film aggregates |
+| July 15 03:00 | Refresh recent catalog | Previous- and current-year film aggregates |
 
-Catalog refresh changes only `Film.avg_rating` and `Film.total_logs`. It does not
-itself make a film recommendation-eligible or trigger retraining.
+Catalog refresh updates `Film.avg_rating` and `Film.total_logs`; it does not change model vocabulary or retraining counters. Scheduled tasks and matching mutating CLI commands use the same Redis locks. Their TTLs exceed the corresponding hard task limits.
 
 ## Operational CLI
 
+Run these commands through the API image in Docker-first environments:
+
 ```bash
-python manage.py process-film-queue [--batch-size N] [--dry-run]
-python manage.py refresh-catalog [--execution-date YYYY-MM-DD] [--dry-run]
-python manage.py training-status
-python manage.py retrain [--force] [--dry-run]
-python manage.py validate-model [--model-version VERSION]
-python manage.py list-models
-python manage.py current-model
-python manage.py rollback-model [--dry-run]
+docker compose run --rm api python manage.py training-status
 ```
 
-Dry runs inspect state without mutation. Maintenance and retraining commands acquire
-the same Redis locks used by Celery so manual diagnostics cannot overlap scheduled
-work.
+### Model inspection, retraining, and rollback
 
-After `retrain` or `rollback-model`, the CLI may report that API activation is
-pending. No manual restart is required: the API watcher validates the pointer and
-recycles the process automatically.
+```bash
+python manage.py training-status
+python manage.py retrain --dry-run
+python manage.py retrain --force
+python manage.py validate-model
+python manage.py validate-model --model-version VERSION
+python manage.py list-models
+python manage.py current-model
+python manage.py rollback-model --dry-run
+python manage.py rollback-model
+```
 
-Initial data and legacy compatibility commands remain available:
+Status and dry-run commands do not build or promote a model. Validation checks checksums and cross-artifact identities. Retraining and rollback update the model pointer; the API watcher then starts the normal process transition.
+
+### Catalog maintenance
+
+```bash
+python manage.py process-film-queue --dry-run
+python manage.py process-film-queue --batch-size 100
+python manage.py refresh-catalog --dry-run
+python manage.py refresh-catalog --execution-date YYYY-MM-DD
+```
+
+Film-queue dry run selects the bounded pending batch. Catalog-refresh dry run applies the January or July selection policy without scraping or writing.
+
+### Initial data and legacy artifacts
 
 ```bash
 python manage.py load-films
@@ -57,27 +72,38 @@ python manage.py load-logs
 python manage.py load-all
 python manage.py train
 python manage.py build-index
+python manage.py build-popularity
 ```
 
-`train` writes the established flat artifacts for development/backward
-compatibility. `retrain` is the versioned production lifecycle command.
+`train` writes flat SVD compatibility artifacts. Production uses the versioned `retrain` lifecycle. `build-popularity` reads the frozen historical CSV for research or legacy use; production popularity is built from PostgreSQL by `retrain`.
 
-Research and diagnostic commands remain in `manage.py` for reproducibility; their
-status and optional requirements are indexed in
-[`experiments/README.md`](../experiments/README.md). A future cleanup may split CLI
-implementation into internal command modules without changing this public command
-surface.
+Research and diagnostic commands are indexed in [`experiments/README.md`](../experiments/README.md).
 
-## Failure boundaries
+## Letterboxd monitoring
 
-- A failed profile task records a safe public error and releases active ownership.
-- A whole FilmQueue scrape failure leaves rows pending for retry.
-- One film persistence failure does not roll back other completed films.
-- Expiring Redis lock TTLs prevent crashed workers from holding maintenance forever.
-- Failed training or validation leaves the selected model untouched.
-- Malformed or invalid model pointer changes do not terminate a healthy API.
-- Failed activation restores a previous valid selection rather than looping.
+Username synchronization depends on public-page scraping through the pinned `letterboxdpy` adapter. Two GitHub automations monitor that boundary:
 
-Health is available at `GET /` and reports `model_status` plus the version loaded by
-the current API process. Logs record promoted, loaded, and transition versions
-without exposing paths or checksums publicly.
+* `.github/dependabot.yml` checks only `letterboxdpy` each Monday at 09:00 `America/Sao_Paulo`, opens at most one PR, and does not auto-merge;
+* `.github/workflows/letterboxd-smoke.yml` runs Monday at 10:17 UTC and supports manual dispatch. It is separate from normal CI.
+
+The smoke workflow exercises NexdWatch's profile and film adapters. It checks stable profile, watch, rating, title, slug, and positive TMDB identity invariants. The command timeout is five minutes and the job timeout is ten minutes.
+
+Configure these GitHub Actions repository variables:
+
+* `LETTERBOXD_SMOKE_USERNAME`: a stable public profile with a watched film;
+* `LETTERBOXD_SMOKE_FILM_SLUG`: a stable public film above the 1,000-rating catalog gate with a TMDB identity.
+
+Missing variables, provider outages, and upstream parser drift fail the canary.
+
+## Failure and recovery
+
+* Failed profile work records a final Redis task state and releases ownership only when the task still owns it.
+* Whole-batch film scraping failures leave selected rows pending; one film failure does not roll back other successful films.
+* Expiring maintenance locks release ownership after a crashed worker.
+* Failed training, validation, or pointer replacement leaves the selected model unchanged.
+* An invalid pointer change does not stop a healthy API process.
+* Startup can restore one previous valid selection. It fails when neither selected model nor predecessor validates.
+
+`GET /` reports `model_status` and the model generation loaded by the current API process. Logs identify built, promoted, loaded, and transition versions.
+
+See [Model lifecycle](model-lifecycle.md) for activation details and [Data ingestion](data-ingestion.md) for task and reconciliation behavior.

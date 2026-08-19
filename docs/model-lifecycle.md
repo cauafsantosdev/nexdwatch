@@ -1,37 +1,29 @@
 # Model lifecycle
 
-NexdWatch trains and activates production recommendation artifacts without mutating
-resources already serving requests.
+NexdWatch trains, validates, selects, and activates recommendation artifacts without changing resources already serving requests.
 
-## Production snapshot
+## Production snapshot and retraining policy
 
-Training reads current PostgreSQL rows with explicit ratings, deduplicates
-`(user_id, film_id)`, and derives one in-memory snapshot. From that same snapshot it
-builds:
+Training reads explicit PostgreSQL ratings, deduplicates `(user_id, film_id)`, and builds one in-memory snapshot. The snapshot produces:
 
-- normalized 32-dimensional TruncatedSVD item vectors;
-- actual film-ID mapping;
-- exact FAISS `IndexIDMap2(IndexFlatIP)` retrieval;
-- production popularity from ratings `>= 3.5`.
+* normalized 32-dimensional TruncatedSVD item vectors;
+* the mapping to actual `Film.id` values;
+* an exact FAISS `IndexIDMap2(IndexFlatIP)` index;
+* popularity counts from ratings `>= 3.5`.
 
-Historical research popularity is separately generated from the frozen
-`data/users_data.csv` cohort. Aggregate catalog fields such as `avg_rating` and
-`total_logs` are not production popularity inputs.
+Production popularity therefore shares the SVD vocabulary and measurement time. It does not use mutable `Film.avg_rating` or `Film.total_logs` values. Historical research popularity comes from the frozen CSV cohort and cannot be packaged as a production source.
 
-## Retraining policy
+Celery Beat evaluates retraining each Sunday. A build is eligible after any of:
 
-Retraining is eligible when any configured operational threshold is reached:
+* 100 new eligible users;
+* 250 newly rated films outside the selected model vocabulary;
+* 180 days since selected-model training.
 
-- 100 new eligible users;
-- 250 newly rated films absent from the selected model vocabulary;
-- 180 days since selected-model training.
+Catalog-only and unrated-only additions do not count as new model films. Operators can inspect the decision with `training-status`, run `retrain`, or bypass thresholds with `retrain --force`.
 
-Catalog-only or unrated-only additions do not count as new model films. A complete
-legacy-flat installation has unknown historical user and interaction counts, so its
-first evaluation reports `LEGACY_MODEL_BOOTSTRAP` and requires one baseline retrain.
-No historical counts are invented.
+A complete legacy-flat installation lacks the manifest counters needed for this comparison. Its first evaluation reports `LEGACY_MODEL_BOOTSTRAP` and requests one baseline versioned retrain.
 
-## Immutable bundles
+## Bundle structure
 
 ```text
 data/models/
@@ -44,47 +36,43 @@ data/models/
     └── manifest.json
 ```
 
-Construction starts in a `.building-*` directory. The manifest records model and
-snapshot identity, training statistics, artifact metadata, and SHA-256 checksums.
-Validation loads SVD and FAISS resources, checks dimensions and ordered IDs, verifies
-popularity compatibility, and verifies every checksum before the directory can be
-promoted.
+Training writes each candidate in an isolated `.building-*` directory. The manifest records model identity and times, SVD dimension, snapshot counts, training and popularity semantics, runtime library versions, and the SHA-256 checksum of every serving artifact.
 
-A failed build or validation removes only the incomplete candidate. The existing
-pointer and the model loaded by the API remain untouched.
+After all files are written, the directory is renamed to its version and reopened for validation. A candidate cannot be selected before validation succeeds.
+
+## Cross-artifact validation
+
+`validate_model_bundle` checks:
+
+1. the directory and manifest model identities match;
+2. the manifest schema and compatibility constants are supported;
+3. all payload checksums match;
+4. vector dimensions and film counts match the manifest;
+5. FAISS stores the ordered IDs from `film_index.json`;
+6. popularity declares the production source and covers exactly the model universe.
+
+This gate checks integrity and serving compatibility. Offline experiments own model and policy quality decisions.
 
 ## Promotion, retention, and rollback
 
-Promotion atomically replaces `current.json` only after complete validation. The
-pointer records the selected version and activation lineage. Retention keeps the
-current version plus the configured number of valid older rollback candidates.
+`current.json` is the model selector. Promotion validates the full candidate and atomically replaces this pointer. The pointer records both the selected version and the previous selection used for activation recovery.
 
-Rollback selects the newest fully valid bundle whose training time is strictly older
-than the current selection. Repeated rollback therefore moves backward and never
-bounces to a newer bundle. Pointer replacement remains atomic and failure leaves the
-old pointer authoritative.
+Retention keeps the current model plus `MODEL_RETENTION_PREVIOUS` valid older rollback candidates. Invalid and incomplete directories do not count as history.
 
-## Automatic activation
+Rollback selects the newest valid bundle trained strictly before the current model. Repeated rollback continues backward. Dry-run selection and validation finish before the pointer changes, so failure leaves the current selection intact.
 
-The API resolves exactly one model location during lifespan startup and loads both
-the legacy recommendation service and categorized service from that location. A
-background watcher remembers the loaded version and periodically reads only the tiny
-pointer file. The default interval is 30 seconds.
+## Activation
 
-When a different pointer is observed, the watcher fully validates the target and
-sends the current API process `SIGTERM`. Uvicorn performs normal lifespan cleanup,
-and Compose `restart: unless-stopped` starts a new process that loads the selected
-bundle. No Docker socket or host-control command is exposed to the application.
+FastAPI startup resolves one model location and configures both recommendation services from it. The process then loads its SVD vectors, film mapping, FAISS index, popularity data, and policy catalog. These resources remain fixed for the process lifetime.
 
-Training therefore does not interrupt serving: the old process keeps its immutable
-resources throughout construction and validation. Only a successful pointer
-transition can request recycling.
+The pointer watcher reads `current.json` every 30 seconds by default. When it finds a new version, it validates the full target and rechecks the pointer identity. It then sends graceful `SIGTERM` to its own process. Uvicorn runs lifespan cleanup, and Compose's `restart: unless-stopped` policy starts a process that loads the selected generation. No Docker socket or in-process model hot swap is involved.
 
-Malformed pointers or invalid targets do not kill a healthy API. If a newly promoted
-target unexpectedly fails startup validation, activation lineage restores the
-previous known-valid bundle once before resources load. The first versioned bootstrap
-may restore the still-complete legacy-flat layout; versioned serving never mixes flat
-and versioned files.
+## Startup recovery
 
-The supported production model is one normal Uvicorn process per API container.
-Multiple containers independently observe the pointer and converge.
+A malformed pointer or invalid target does not stop a healthy running process. If a selected target fails startup validation, the recorded lineage permits one restore of the previous valid selection. The first versioned transition may restore a complete legacy-flat layout. Versioned serving never combines flat and versioned files.
+
+If neither the selected model nor its predecessor is valid, startup fails.
+
+The supported Compose service runs one Uvicorn process per API container. Each process observes the pointer independently and activates a selection through its own restart.
+
+See [Operations](operations.md) for lifecycle commands and recovery checks.

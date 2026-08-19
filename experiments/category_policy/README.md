@@ -1,8 +1,9 @@
-# Categorized recommendation policy V1.1
+# Categorized recommendation policy research
 
-> **Current status:** Policy V1.1 is now the production categorized-feed policy at
-> `GET /recommendations/{user_id}/feed`. The experiment runners remain offline and do
-> not participate in FastAPI startup. See
+> **Current status:** The V1.1 portfolio design supplies the production categorized
+> feed, with the later V1.2 cultural eligibility correction for Brazilian Cinema and
+> World Cinema. The experiment runners remain offline and do not participate in
+> FastAPI startup. See
 > [the production methodology](../../docs/recommendation-system.md).
 
 This package evaluates NexdWatch's internal portfolio policy. It does not
@@ -90,7 +91,9 @@ python manage.py analyze-category-refinement
 ```
 
 Historical V1 evidence remains in `RESULTS.md`; V1.1 evidence is written to
-`RESULTS_V1_1.md` and a separate ignored machine-readable report.
+`RESULTS_V1_1.md` and a separate ignored machine-readable report. Those measured
+portfolio values predate the V1.2 cultural predicates and are not silently relabeled
+as V1.2 results.
 
 Deterministic paired qualitative previews and the warm loaded-service benchmark
 are available with:
