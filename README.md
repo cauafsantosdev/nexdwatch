@@ -7,15 +7,23 @@
 [![FAISS](https://img.shields.io/badge/FAISS-1.14.3-0467DF)](https://github.com/facebookresearch/faiss)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+**[Live Application: nexdwatch.cauafsantos.dev](https://nexdwatch.cauafsantos.dev)**
+
 **NexdWatch** is a personalized movie recommender built around Letterboxd. It uses a user's ratings to retrieve films through collaborative filtering, combines those results with a popularity baseline, and organizes the final recommendations into shelves such as Hidden Gems, World Cinema, favorite genres, directors, and decades.
 
 Behind the product is a FastAPI/Next.js application with asynchronous profile ingestion, FAISS-based retrieval, PostgreSQL, Celery, and a versioned model lifecycle with validation and rollback. The repository also contains the experiments used to choose the final recommendation architecture.
 
 ---
 
+## Demo
+
+https://github.com/user-attachments/assets/e4e0cb59-9af4-4f8d-9841-643540b4924b
+
+---
+
 ## Key Features
 
-* **Letterboxd profile sync:** Public profiles are synchronized asynchronously, while official Letterboxd export ZIPs provide an offline fallback.
+* **Username-first Letterboxd sync:** Public profiles are synchronized asynchronously from a Letterboxd username, including users absent from the training cohort. Official Letterboxd export ZIPs remain available as a fallback ingestion path.
 * **Zero-shot personalization:** New users do not need to exist in the training cohort; their current ratings are enough to build a request-time SVD profile.
 * **Multi-source retrieval:** Personalized SVD candidates are combined with a controlled popularity baseline before final ranking.
 * **Categorized recommendations:** The global ranking is turned into shelves such as Top Picks, Hidden Gems, Because You Liked, World Cinema, favorite genres, directors, and decades.
@@ -67,8 +75,9 @@ flowchart LR
     API --> DB[(PostgreSQL)]
 
     Redis --> ProfileWorker[Profile-sync worker]
-    ProfileWorker --> Letterboxd[Letterboxd]
-    ProfileWorker --> DB
+    ProfileWorker --> ZenRows[ZenRows Fetch]
+    ZenRows --> Letterboxd[Letterboxd]
+    ProfileWorker --> DB[(PostgreSQL)]
 
     Beat[Celery Beat] --> MaintenanceWorker[Maintenance worker]
     MaintenanceWorker --> DB
@@ -131,7 +140,7 @@ See [Serving performance](experiments/category_policy/SERVING_PERFORMANCE.md).
 * **Background processing:** Celery 5.6.3, Redis 8
 * **Machine learning:** scikit-learn TruncatedSVD, NumPy, FAISS 1.14.3
 * **Infrastructure:** Docker, Docker Compose, GitHub Actions
-* **External integrations:** Letterboxd scraping/export ingestion, optional TMDB poster metadata
+* **External integrations:** Letterboxd profile/export ingestion, ZenRows production scraping transport, optional TMDB poster metadata
 * **Testing:** Pytest, Ruff, ESLint, TypeScript compiler, Next.js production build
 
 ---
@@ -248,4 +257,6 @@ This project is licensed under the [MIT License](LICENSE).
 
 Cauã Santos – [LinkedIn Profile](https://www.linkedin.com/in/cauafsantosdev/) – cauafsantosdev@gmail.com
 
-Project Link: [https://github.com/cauafsantosdev/nexdwatch](https://github.com/cauafsantosdev/nexdwatch)
+Live Application: [nexdwatch.cauafsantos.dev](https://nexdwatch.cauafsantos.dev)
+
+Repository: [github.com/cauafsantosdev/nexdwatch](https://github.com/cauafsantosdev/nexdwatch)
