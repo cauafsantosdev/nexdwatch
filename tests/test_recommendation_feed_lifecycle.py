@@ -1,6 +1,7 @@
 """Application ownership of categorized recommendation resources."""
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -8,6 +9,7 @@ from starlette.requests import Request
 
 from app import main as main_module
 from app.api.routes.health import health
+from app.ml.model_registry import ServingModelLocation
 
 
 class _OldRecommendationService:
@@ -49,6 +51,17 @@ def _configure(monkeypatch, *, categorized_loaded: bool = True):
     old = _OldRecommendationService()
     categorized = _CategorizedService(categorized_loaded)
     tasks = _TaskService()
+    fake_model_root = Path("unused-test-model")
+    monkeypatch.setattr(
+        main_module,
+        "resolve_startup_model",
+        lambda _artifact_root: ServingModelLocation(
+            root=fake_model_root,
+            model_version="legacy-flat",
+            popularity_path=fake_model_root / "popularity.json",
+            versioned=False,
+        ),
+    )
     monkeypatch.setattr(main_module, "get_recommendation_service", lambda: old)
     monkeypatch.setattr(
         main_module, "build_categorized_recommendation_service", lambda: categorized
