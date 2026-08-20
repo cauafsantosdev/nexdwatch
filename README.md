@@ -5,7 +5,6 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-17-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-8-DC382D?logo=redis&logoColor=white)](https://redis.io/)
 [![FAISS](https://img.shields.io/badge/FAISS-1.14.3-0467DF)](https://github.com/facebookresearch/faiss)
-[![CI](https://github.com/cauafsantosdev/nexdwatch/actions/workflows/ci.yml/badge.svg)](https://github.com/cauafsantosdev/nexdwatch/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **NexdWatch** is a personalized movie recommender built around Letterboxd. It uses a user's ratings to retrieve films through collaborative filtering, combines those results with a popularity baseline, and organizes the final recommendations into shelves such as Hidden Gems, World Cinema, favorite genres, directors, and decades.

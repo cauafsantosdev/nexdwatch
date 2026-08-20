@@ -1,0 +1,238 @@
+name: NexdWatch CI/CD
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAMESPACE: cauafsantosdev
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      POSTGRES_DB: nexdwatch_test
+      POSTGRES_USER: nexdwatch_test
+      POSTGRES_PASSWORD: nexdwatch_test
+      POSTGRES_HOST: localhost
+      POSTGRES_PORT: "5432"
+      SECRET_KEY: ci-test-only
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+
+      - name: Validate dependencies
+        run: python -m pip check
+
+      - name: Run Ruff
+        run: ruff check .
+
+      - name: Compile Python sources
+        run: python -m compileall -q app experiments manage.py
+
+      - name: Run tests
+        run: python -m pytest
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Run frontend lint
+        run: npm run lint
+
+      - name: Run frontend type checking
+        run: npm run typecheck
+
+      - name: Build frontend
+        run: npm run build
+
+  build-images:
+    name: Build and publish images
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - validate
+      - frontend
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.prod
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ env.IMAGE_NAMESPACE }}/nexdwatch-backend:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=nexdwatch-backend
+          cache-to: type=gha,mode=max,scope=nexdwatch-backend
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile.prod
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ env.IMAGE_NAMESPACE }}/nexdwatch-frontend:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=nexdwatch-frontend
+          cache-to: type=gha,mode=max,scope=nexdwatch-frontend
+
+  deploy-production:
+    name: Deploy production
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs:
+      - build-images
+    environment:
+      name: production
+      url: https://nexdwatch.cauafsantos.dev
+    concurrency:
+      group: nexdwatch-production
+      cancel-in-progress: false
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Configure deployment SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PROD_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/nexdwatch_deploy
+          chmod 600 ~/.ssh/nexdwatch_deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Upload production Compose
+        env:
+          SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          SSH_PORT: ${{ secrets.PROD_SSH_PORT }}
+          SSH_USER: ${{ secrets.PROD_SSH_USER }}
+        run: |
+          scp \
+            -i ~/.ssh/nexdwatch_deploy \
+            -P "$SSH_PORT" \
+            docker-compose.prod.yml \
+            "$SSH_USER@$SSH_HOST:/opt/apps/nexdwatch/docker-compose.prod.yml"
+
+      - name: Deploy commit
+        env:
+          SSH_HOST: ${{ secrets.PROD_SSH_HOST }}
+          SSH_PORT: ${{ secrets.PROD_SSH_PORT }}
+          SSH_USER: ${{ secrets.PROD_SSH_USER }}
+        run: |
+          ssh \
+            -i ~/.ssh/nexdwatch_deploy \
+            -p "$SSH_PORT" \
+            "$SSH_USER@$SSH_HOST" \
+            "bash -s -- '$GITHUB_SHA'" <<'REMOTE'
+          set -euo pipefail
+
+          image_tag="$1"
+          cd /opt/apps/nexdwatch
+          printf 'IMAGE_TAG=%s\n' "$image_tag" > .release.env
+
+          compose=(
+            docker compose
+            --env-file .env.prod
+            --env-file .release.env
+            -f docker-compose.prod.yml
+          )
+
+          "${compose[@]}" pull
+          "${compose[@]}" run --rm nexdwatch-api alembic upgrade head
+          "${compose[@]}" up -d --remove-orphans
+
+          api_ready=false
+          for attempt in $(seq 1 12); do
+            if "${compose[@]}" exec -T nexdwatch-api python -c "import json, urllib.request; payload = json.load(urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)); assert payload.get('model_status') == 'loaded'; assert payload.get('model_version')"; then
+              api_ready=true
+              break
+            fi
+            sleep 5
+          done
+
+          if [[ "$api_ready" != true ]]; then
+            "${compose[@]}" logs --tail=100 nexdwatch-api
+            exit 1
+          fi
+
+          "${compose[@]}" ps
+          REMOTE
+
+      - name: Verify public frontend
+        run: |
+          curl \
+            --fail \
+            --show-error \
+            --silent \
+            --output /dev/null \
+            --retry 12 \
+            --retry-delay 5 \
+            --retry-connrefused \
+            https://nexdwatch.cauafsantos.dev/

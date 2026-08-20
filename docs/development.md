@@ -73,7 +73,7 @@ The tracked frontend environment template sets `NEXDWATCH_API_URL=http://localho
 
 ## Continuous integration
 
-`.github/workflows/ci.yml` runs for pushes and pull requests targeting `main`. The Python 3.14 job installs `requirements.txt`, runs `pip check`, Ruff, compilation, and pytest. The Node 24 job runs `npm ci`, ESLint, TypeScript checking, and the production build with lockfile-based npm caching. Normal CI does not call Letterboxd. The scheduled live canary is covered in [Operations](operations.md).
+`.github/workflows/ci-cd.yml` runs for pushes and pull requests targeting `main`. The Python 3.14 job installs `requirements.txt`, runs `pip check`, Ruff, compilation, and pytest. The Node 24 job runs `npm ci`, ESLint, TypeScript checking, and the production build with lockfile-based npm caching. Normal CI does not call Letterboxd. The scheduled live canary is covered in [Operations](operations.md).
 
 ## Research dependencies and history
 

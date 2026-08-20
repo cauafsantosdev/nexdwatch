@@ -1,0 +1,43 @@
+FROM python:3.14.6-slim AS dependencies
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /build
+
+COPY requirements-prod.txt ./
+
+RUN python -m pip install --upgrade pip \
+    && python -m pip wheel --wheel-dir /wheels -r requirements-prod.txt
+
+
+FROM python:3.14.6-slim AS production
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+WORKDIR /app
+
+RUN groupadd --gid 10001 nexdwatch \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin nexdwatch
+
+COPY --from=dependencies /wheels /wheels
+COPY requirements-prod.txt ./
+
+RUN python -m pip install --no-index --find-links=/wheels -r requirements-prod.txt \
+    && rm -rf /wheels
+
+COPY alembic.ini manage.py ./
+COPY alembic ./alembic
+COPY app ./app
+COPY experiments ./experiments
+
+RUN mkdir -p /app/data/models \
+    && chown -R nexdwatch:nexdwatch /app/data
+
+USER nexdwatch
+
+EXPOSE 8000
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

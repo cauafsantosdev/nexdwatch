@@ -18,6 +18,14 @@ The single-host deployment defines these services:
 
 Run exactly one Beat instance. The API uses `restart: unless-stopped` because a validated model-pointer change causes graceful process shutdown; Compose starts the process that loads the next generation.
 
+## Production deployment
+
+`docker-compose.prod.yml` runs the GHCR backend image for `api`, `worker`, `maintenance_worker`, and `beat`, plus the standalone frontend image. It has no build steps or stateful infrastructure services. The frontend alone joins `vps-edge`; backend processes reach shared PostgreSQL and Redis through `vps-data`.
+
+The VPS keeps secrets and runtime settings in `/opt/apps/nexdwatch/.env.prod`, based on `.env.prod.example`. CI writes `/opt/apps/nexdwatch/.release.env` with only the immutable `IMAGE_TAG`, pulls both images, runs Alembic from the new backend image, reconciles Compose, checks internal API/model health, and verifies `https://nexdwatch.cauafsantos.dev/`.
+
+Production mounts `/opt/apps/nexdwatch/data` at `/app/data` in the API and maintenance worker. This preserves versioned bundles under `data/models` and the legacy-flat files required during initial migration. Before the first deployment, create the application directory and database, install `.env.prod`, transfer a valid serving model, configure GHCR pull access, and add the Caddy route in `vps-infra`.
+
 ## Scheduled maintenance
 
 | UTC schedule | Task | Scope |

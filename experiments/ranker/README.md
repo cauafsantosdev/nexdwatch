@@ -31,7 +31,7 @@ Create an isolated ranker environment with:
 
 ```bash
 python -m venv /tmp/nexdwatch-ranker-venv
-/tmp/nexdwatch-ranker-venv/bin/pip install -r requirements-ranker.txt
+/tmp/nexdwatch-ranker-venv/bin/pip install -r experiments/ranker/requirements.txt
 ```
 
 Smoke-test seed 42/fold 0 first:

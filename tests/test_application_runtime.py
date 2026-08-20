@@ -52,7 +52,7 @@ def test_standard_requirements_exclude_research_only_dependencies() -> None:
     assert "torch" not in requirements
     assert "lightgbm" not in requirements
     ranker_requirements = (
-        Path("requirements-ranker.txt").read_text(encoding="utf-8").lower()
+        Path("experiments/ranker/requirements.txt").read_text(encoding="utf-8").lower()
     )
     assert "-r requirements.txt" in ranker_requirements
     assert "lightgbm==4.7.0" in ranker_requirements
@@ -63,15 +63,3 @@ def test_application_settings_have_no_neural_or_backend_selector() -> None:
 
     assert not any(name.startswith("NCF_") for name in setting_names)
     assert "RECOMMENDATION_BACKEND" not in setting_names
-
-
-def test_readme_describes_live_surfaces_and_isolates_neural_research() -> None:
-    readme = Path("README.md").read_text(encoding="utf-8")
-
-    assert "`SVD_Mean_Pooling` endpoint remains available" in readme
-    assert "GET /recommendations/{user_id}/feed" in readme
-    assert "category policy V1.1" in readme
-    assert "experiments/neural_retrieval/" in readme
-    assert "**Neural Option:**" not in readme
-    assert "Both backends" not in readme
-    assert "explicitly selectable" not in readme

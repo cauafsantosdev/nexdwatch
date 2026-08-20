@@ -1,0 +1,143 @@
+x-backend-environment: &backend-environment
+  ENVIRONMENT: ${ENVIRONMENT:-production}
+  DEBUG: ${DEBUG:-false}
+  SECRET_KEY: ${SECRET_KEY:?SECRET_KEY is required}
+  POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB is required}
+  POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+  POSTGRES_HOST: ${POSTGRES_HOST:-postgres}
+  POSTGRES_PORT: ${POSTGRES_PORT:-5432}
+  CELERY_BROKER_URL: ${CELERY_BROKER_URL:?CELERY_BROKER_URL is required}
+  TASK_STATE_REDIS_URL: ${TASK_STATE_REDIS_URL:?TASK_STATE_REDIS_URL is required}
+  MAINTENANCE_REDIS_URL: ${MAINTENANCE_REDIS_URL:?MAINTENANCE_REDIS_URL is required}
+  ARTIFACT_ROOT: ${ARTIFACT_ROOT:-/app/data}
+  PROFILE_SYNC_FRESHNESS_SECONDS: ${PROFILE_SYNC_FRESHNESS_SECONDS:-900}
+  PROFILE_SYNC_ACTIVE_TTL_SECONDS: ${PROFILE_SYNC_ACTIVE_TTL_SECONDS:-600}
+  TASK_RESULT_TTL_SECONDS: ${TASK_RESULT_TTL_SECONDS:-86400}
+  PROFILE_SYNC_SOFT_TIME_LIMIT_SECONDS: ${PROFILE_SYNC_SOFT_TIME_LIMIT_SECONDS:-300}
+  PROFILE_SYNC_HARD_TIME_LIMIT_SECONDS: ${PROFILE_SYNC_HARD_TIME_LIMIT_SECONDS:-330}
+  CELERY_BROKER_VISIBILITY_TIMEOUT_SECONDS: ${CELERY_BROKER_VISIBILITY_TIMEOUT_SECONDS:-21600}
+  MAINTENANCE_LOCK_TTL_SECONDS: ${MAINTENANCE_LOCK_TTL_SECONDS:-21600}
+  MAINTENANCE_SOFT_TIME_LIMIT_SECONDS: ${MAINTENANCE_SOFT_TIME_LIMIT_SECONDS:-18000}
+  MAINTENANCE_HARD_TIME_LIMIT_SECONDS: ${MAINTENANCE_HARD_TIME_LIMIT_SECONDS:-21000}
+  FILM_QUEUE_BATCH_SIZE: ${FILM_QUEUE_BATCH_SIZE:-100}
+  NEW_ELIGIBLE_USERS_THRESHOLD: ${NEW_ELIGIBLE_USERS_THRESHOLD:-100}
+  NEW_MODEL_FILMS_THRESHOLD: ${NEW_MODEL_FILMS_THRESHOLD:-250}
+  MAX_MODEL_AGE_DAYS: ${MAX_MODEL_AGE_DAYS:-180}
+  MODEL_RETENTION_PREVIOUS: ${MODEL_RETENTION_PREVIOUS:-2}
+  MODEL_POINTER_CHECK_INTERVAL_SECONDS: ${MODEL_POINTER_CHECK_INTERVAL_SECONDS:-30}
+
+services:
+  nexdwatch-frontend:
+    image: ghcr.io/cauafsantosdev/nexdwatch-frontend:${IMAGE_TAG:?IMAGE_TAG is required}
+    restart: unless-stopped
+    init: true
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      NEXT_TELEMETRY_DISABLED: "1"
+      NEXDWATCH_API_URL: ${NEXDWATCH_API_URL:?NEXDWATCH_API_URL is required}
+      TMDB_API_READ_TOKEN: ${TMDB_API_READ_TOKEN:-}
+    networks:
+      app:
+      vps-edge:
+    depends_on:
+      nexdwatch-api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:3000/').then(response => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  nexdwatch-api:
+    image: ghcr.io/cauafsantosdev/nexdwatch-backend:${IMAGE_TAG:?IMAGE_TAG is required}
+    restart: unless-stopped
+    init: true
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    expose:
+      - "8000"
+    environment: *backend-environment
+    volumes:
+      - /opt/apps/nexdwatch/data:/app/data
+    networks:
+      - app
+      - vps-data
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json, urllib.request; payload = json.load(urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5)); assert payload.get('model_status') == 'loaded'; assert payload.get('model_version')"
+      interval: 30s
+      timeout: 6s
+      retries: 5
+      start_period: 30s
+
+  nexdwatch-worker:
+    image: ghcr.io/cauafsantosdev/nexdwatch-backend:${IMAGE_TAG:?IMAGE_TAG is required}
+    restart: unless-stopped
+    init: true
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - worker
+      - --loglevel=INFO
+      - --queues=profile_sync
+      - --concurrency=1
+    stop_grace_period: 6m
+    environment: *backend-environment
+    networks:
+      - vps-data
+
+  nexdwatch-maintenance-worker:
+    image: ghcr.io/cauafsantosdev/nexdwatch-backend:${IMAGE_TAG:?IMAGE_TAG is required}
+    restart: unless-stopped
+    init: true
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - worker
+      - --loglevel=INFO
+      - --queues=maintenance
+      - --concurrency=1
+    stop_grace_period: 6h
+    environment: *backend-environment
+    volumes:
+      - /opt/apps/nexdwatch/data:/app/data
+    networks:
+      - vps-data
+
+  nexdwatch-beat:
+    image: ghcr.io/cauafsantosdev/nexdwatch-backend:${IMAGE_TAG:?IMAGE_TAG is required}
+    restart: unless-stopped
+    init: true
+    command:
+      - celery
+      - -A
+      - app.workers.celery_app.celery_app
+      - beat
+      - --loglevel=INFO
+      - --schedule=/tmp/celerybeat-schedule
+    environment: *backend-environment
+    networks:
+      - vps-data
+
+networks:
+  app:
+    name: nexdwatch-app
+    internal: true
+  vps-edge:
+    external: true
+    name: vps-edge
+  vps-data:
+    external: true
+    name: vps-data
