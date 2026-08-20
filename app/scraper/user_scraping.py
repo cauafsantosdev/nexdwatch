@@ -18,7 +18,7 @@ from letterboxdpy.core.exceptions import (
 )
 
 from app.domain.profiles import ScrapedProfile, ScrapedWatch
-from app.scraper.letterboxd_transport import UserFilms
+from app.scraper.letterboxd_transport import UserFilms, profile_scrape_session
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,8 @@ def scrape_user_profile(username: str) -> ScrapedProfile:
     # Keep provider-specific exceptions at this boundary so Celery retry policy does
     # not depend on letterboxdpy implementation details.
     try:
-        result = UserFilms(username).get_films()
+        with profile_scrape_session():
+            result = UserFilms(username).get_films()
     except PageLoadError as exc:
         logger.warning("Transient profile transport failure username=%s", username)
         raise TransientProfileScrapeError(

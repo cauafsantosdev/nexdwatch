@@ -5,7 +5,10 @@ transport injection. This adapter replaces only that binding with a dispatcher;
 all pagination and HTML extraction remain owned by the pinned library.
 """
 
-from collections.abc import Mapping
+import secrets
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
@@ -20,6 +23,9 @@ from app.core.config import get_settings
 ZENROWS_ENDPOINT = "https://api.zenrows.com/v1/"
 _ZENROWS_TIMEOUT = (10, 30)
 _direct_parse_url = letterboxd_user_films.parse_url
+_session_id: ContextVar[int | None] = ContextVar(
+    "letterboxd_zenrows_session_id", default=None
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,6 +44,22 @@ def _is_letterboxd_url(url: str) -> bool:
     return hostname == "letterboxd.com" or hostname.endswith(".letterboxd.com")
 
 
+def _new_session_id() -> int:
+    """Return a nonzero ZenRows session identifier within its five-digit range."""
+    return secrets.randbelow(99_999) + 1
+
+
+@contextmanager
+def profile_scrape_session() -> Iterator[int]:
+    """Own one context-local ZenRows session for a complete profile scrape."""
+    session_id = _new_session_id()
+    token = _session_id.set(session_id)
+    try:
+        yield session_id
+    finally:
+        _session_id.reset(token)
+
+
 def parse_user_films_page(url: str) -> BeautifulSoup:
     """Fetch one user-film page directly or through configured ZenRows transport."""
     configured_key = get_settings().ZENROWS_API_KEY
@@ -48,10 +70,19 @@ def parse_user_films_page(url: str) -> BeautifulSoup:
     ):
         return _direct_parse_url(url)
 
+    session_id = _session_id.get()
+    if session_id is None:
+        raise PageLoadError(url, "ZenRows profile session is unavailable")
+
     try:
         response = requests.get(
             ZENROWS_ENDPOINT,
-            params={"url": url, "apikey": api_key, "mode": "auto"},
+            params={
+                "url": url,
+                "apikey": api_key,
+                "mode": "auto",
+                "session_id": session_id,
+            },
             timeout=_ZENROWS_TIMEOUT,
         )
     except requests.errors.RequestsError:
@@ -75,4 +106,4 @@ def parse_user_films_page(url: str) -> BeautifulSoup:
 letterboxd_user_films.parse_url = parse_user_films_page
 UserFilms = letterboxd_user_films.UserFilms
 
-__all__ = ["UserFilms"]
+__all__ = ["UserFilms", "profile_scrape_session"]

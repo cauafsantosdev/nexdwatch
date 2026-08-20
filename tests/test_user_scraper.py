@@ -61,6 +61,7 @@ def test_user_films_transport_uses_zenrows_auto_mode(monkeypatch) -> None:
     monkeypatch.setattr(
         letterboxd_transport, "get_settings", lambda: _settings("zenrows-secret")
     )
+    monkeypatch.setattr(letterboxd_transport, "_new_session_id", lambda: 1234)
 
     def get(endpoint, *, params, timeout):
         calls.append((endpoint, params, timeout))
@@ -68,14 +69,21 @@ def test_user_films_transport_uses_zenrows_auto_mode(monkeypatch) -> None:
 
     monkeypatch.setattr(letterboxd_transport.requests, "get", get)
 
-    dom = letterboxd_transport.parse_user_films_page(url)
+    with letterboxd_transport.profile_scrape_session():
+        dom = letterboxd_transport.parse_user_films_page(url)
 
     assert dom.title.string == "Proxied"
     assert dom.final_url == url
+    assert letterboxd_transport._session_id.get() is None
     assert calls == [
         (
             letterboxd_transport.ZENROWS_ENDPOINT,
-            {"url": url, "apikey": "zenrows-secret", "mode": "auto"},
+            {
+                "url": url,
+                "apikey": "zenrows-secret",
+                "mode": "auto",
+                "session_id": 1234,
+            },
             letterboxd_transport._ZENROWS_TIMEOUT,
         )
     ]
@@ -95,6 +103,57 @@ def test_user_films_transport_keeps_unrelated_urls_direct(monkeypatch) -> None:
     monkeypatch.setattr(letterboxd_transport.requests, "get", pytest.fail)
 
     assert letterboxd_transport.parse_user_films_page(url) is direct_dom
+
+
+def test_profile_scrapes_reuse_pages_but_have_independent_sessions(monkeypatch) -> None:
+    generated_ids = iter((1234, 5678))
+    requested_session_ids = []
+    monkeypatch.setattr(
+        letterboxd_transport, "get_settings", lambda: _settings("zenrows-secret")
+    )
+    monkeypatch.setattr(
+        letterboxd_transport, "_new_session_id", lambda: next(generated_ids)
+    )
+
+    def get(endpoint, *, params, timeout):
+        requested_session_ids.append(params["session_id"])
+        return _zenrows_response("<html></html>")
+
+    class PaginatedUserFilms:
+        def get_films(self):
+            letterboxd_transport.parse_user_films_page(
+                "https://letterboxd.com/cinephile/films/page/1/"
+            )
+            letterboxd_transport.parse_user_films_page(
+                "https://letterboxd.com/cinephile/films/page/2/"
+            )
+            return {"movies": {}}
+
+    monkeypatch.setattr(letterboxd_transport.requests, "get", get)
+    monkeypatch.setattr(user_scraping, "UserFilms", lambda _: PaginatedUserFilms())
+
+    user_scraping.scrape_user_profile("cinephile")
+    assert letterboxd_transport._session_id.get() is None
+    user_scraping.scrape_user_profile("cinephile")
+
+    assert requested_session_ids == [1234, 1234, 5678, 5678]
+    assert letterboxd_transport._session_id.get() is None
+
+
+def test_profile_scrape_resets_session_after_exception(monkeypatch) -> None:
+    monkeypatch.setattr(letterboxd_transport, "_new_session_id", lambda: 4321)
+
+    class FailingUserFilms:
+        def get_films(self):
+            assert letterboxd_transport._session_id.get() == 4321
+            raise PageLoadError("https://letterboxd.com/cinephile/films/")
+
+    monkeypatch.setattr(user_scraping, "UserFilms", lambda _: FailingUserFilms())
+
+    with pytest.raises(user_scraping.TransientProfileScrapeError):
+        user_scraping.scrape_user_profile("cinephile")
+
+    assert letterboxd_transport._session_id.get() is None
 
 
 def test_zenrows_html_flows_through_existing_user_films_parser(monkeypatch) -> None:

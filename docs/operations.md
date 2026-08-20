@@ -107,8 +107,9 @@ Production profile scraping can optionally use ZenRows when the host IP cannot
 reach Letterboxd directly. Set the server-only `ZENROWS_API_KEY` secret in
 `.env.prod`; leave it empty to retain direct `letterboxdpy` requests. When set,
 only paginated user-film pages are fetched through ZenRows Adaptive Stealth Mode
-(`mode=auto`). The returned HTML continues through the existing `letterboxdpy`
-parser, while film-catalog scraping and unrelated HTTP requests remain direct.
+(`mode=auto`). All pages in one profile scrape reuse one scrape-local `session_id`.
+The returned HTML continues through the existing `letterboxdpy` parser, while
+film-catalog scraping and unrelated HTTP requests remain direct.
 
 ## Failure and recovery
 
