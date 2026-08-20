@@ -40,8 +40,8 @@ services:
       NEXDWATCH_API_URL: ${NEXDWATCH_API_URL:?NEXDWATCH_API_URL is required}
       TMDB_API_READ_TOKEN: ${TMDB_API_READ_TOKEN:-}
     networks:
-      app:
-      vps-edge:
+      - app
+      - vps-edge
     depends_on:
       nexdwatch-api:
         condition: service_healthy
