@@ -111,6 +111,17 @@ only paginated user-film pages are fetched through ZenRows Adaptive Stealth Mode
 The returned HTML continues through the existing `letterboxdpy` parser, while
 film-catalog scraping and unrelated HTTP requests remain direct.
 
+## Letterboxd transport reliability
+
+Production username synchronization uses ZenRows because Letterboxd may reject
+requests originating from datacenter IP ranges. This remains an upstream-dependent
+integration: successful HTTP responses do not by themselves guarantee that
+Letterboxd returned the expected profile representation.
+
+Live scraper behavior is therefore monitored separately from normal CI. Transient
+provider failures should be treated as retryable ingestion failures rather than
+application or recommendation failures.
+
 ## Failure and recovery
 
 * Failed profile work records a final Redis task state and releases ownership only when the task still owns it.
