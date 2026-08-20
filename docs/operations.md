@@ -103,6 +103,13 @@ Configure these GitHub Actions repository variables:
 
 Missing variables, provider outages, and upstream parser drift fail the canary.
 
+Production profile scraping can optionally use ZenRows when the host IP cannot
+reach Letterboxd directly. Set the server-only `ZENROWS_API_KEY` secret in
+`.env.prod`; leave it empty to retain direct `letterboxdpy` requests. When set,
+only paginated user-film pages are fetched through ZenRows Adaptive Stealth Mode
+(`mode=auto`). The returned HTML continues through the existing `letterboxdpy`
+parser, while film-catalog scraping and unrelated HTTP requests remain direct.
+
 ## Failure and recovery
 
 * Failed profile work records a final Redis task state and releases ownership only when the task still owns it.

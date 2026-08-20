@@ -16,9 +16,9 @@ from letterboxdpy.core.exceptions import (
     PrivateRouteError,
     ResourceNotFoundError,
 )
-from letterboxdpy.pages.user_films import UserFilms
 
 from app.domain.profiles import ScrapedProfile, ScrapedWatch
+from app.scraper.letterboxd_transport import UserFilms
 
 logger = logging.getLogger(__name__)
 

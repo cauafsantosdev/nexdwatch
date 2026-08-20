@@ -3,7 +3,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, model_validator
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -38,6 +38,7 @@ class Settings(BaseSettings):
 
     MODEL_PATH: str = "models/"
     SCRAPER_MAX_WORKERS: int = 5
+    ZENROWS_API_KEY: SecretStr | None = None
 
     CELERY_BROKER_URL: str = "redis://redis:6379/0"
     TASK_STATE_REDIS_URL: str = "redis://redis:6379/1"
