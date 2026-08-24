@@ -31,8 +31,17 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
-      - name: Install scraper dependency
-        run: python -m pip install --constraint requirements.txt letterboxdpy
+      - name: Install pinned Letterboxd dependency
+        run: |
+          LETTERBOXDPY_REQUIREMENT="$(grep -E '^letterboxdpy==' requirements.txt)"
+      
+          if [[ -z "$LETTERBOXDPY_REQUIREMENT" ]]; then
+            echo "letterboxdpy pin not found in requirements.txt"
+            exit 1
+          fi
+      
+          echo "Installing $LETTERBOXDPY_REQUIREMENT"
+          python -m pip install "$LETTERBOXDPY_REQUIREMENT"
 
       - name: Run bounded live scraper smoke
         run: timeout 5m python -m scripts.smoke_letterboxd
