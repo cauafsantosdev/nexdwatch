@@ -19,6 +19,10 @@ jobs:
     env:
       LETTERBOXD_SMOKE_USERNAME: ${{ vars.LETTERBOXD_SMOKE_USERNAME }}
       LETTERBOXD_SMOKE_FILM_SLUG: ${{ vars.LETTERBOXD_SMOKE_FILM_SLUG }}
+      POSTGRES_USER: smoke
+      POSTGRES_PASSWORD: smoke
+      POSTGRES_DB: smoke
+      SECRET_KEY: smoke-only-unused-key
 
     steps:
       - name: Check out repository
@@ -41,7 +45,7 @@ jobs:
           fi
       
           echo "Installing $LETTERBOXDPY_REQUIREMENT"
-          python -m pip install "$LETTERBOXDPY_REQUIREMENT"
+          python -m pip install "$LETTERBOXDPY_REQUIREMENT" pydantic pydantic-settings
 
       - name: Run bounded live scraper smoke
         run: timeout 5m python -m scripts.smoke_letterboxd
