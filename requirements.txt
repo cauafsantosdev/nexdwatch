@@ -10,7 +10,7 @@ numpy
 pandas
 scikit-learn
 joblib
-letterboxdpy==6.5.7
+letterboxdpy==6.5.9
 python-multipart
 faiss-cpu==1.14.3
 celery[redis]==5.6.3
